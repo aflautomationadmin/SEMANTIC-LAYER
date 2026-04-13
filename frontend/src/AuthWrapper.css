@@ -1,0 +1,128 @@
+/* ── Auth background ───────────────────────────────────────────────────── */
+.auth-bg {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #1a0509 0%, #6b0518 50%, #C8102E 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Split layout (login) ──────────────────────────────────────────────── */
+.auth-split {
+  display: flex;
+  width: 100%;
+  max-width: 960px;
+  min-height: 560px;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0,0,0,.45);
+  margin: 24px;
+}
+
+/* Left branding panel */
+.auth-panel-left {
+  flex: 1;
+  background: rgba(0,0,0,.25);
+  backdrop-filter: blur(8px);
+  padding: 56px 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  color: #fff;
+  border-right: 1px solid rgba(255,255,255,.1);
+}
+.auth-brand { display: flex; flex-direction: column; gap: 14px; }
+.auth-logo-wrap {
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px 20px;
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+}
+.auth-logo-img {
+  height: 36px;
+  width: auto;
+  object-fit: contain;
+  display: block;
+}
+.auth-brand h1 { font-size: 28px; font-weight: 800; letter-spacing: -.01em; margin: 0; }
+.auth-brand p  { font-size: 14px; opacity: .7; margin: 0; }
+.auth-tagline  { display: flex; flex-direction: column; gap: 12px; }
+.auth-feature  { font-size: 14px; opacity: .8; display: flex; align-items: center; gap: 8px; }
+
+/* Right sign-in panel */
+.auth-panel-right {
+  width: 400px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 40px;
+}
+.auth-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.auth-card-logo { display: flex; justify-content: center; margin-bottom: 4px; }
+.auth-card-logo-img {
+  height: 40px;
+  width: auto;
+  object-fit: contain;  /* logo is already red — looks great on white card */
+}
+.auth-title    { font-size: 24px; font-weight: 700; color: #1a1a1a; margin: 0; text-align: center; }
+.auth-subtitle { font-size: 14px; color: #666; margin: 0; text-align: center; line-height: 1.5; }
+
+/* Microsoft sign-in button */
+.ms-btn {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  width: 100%; height: 48px;
+  background: #fff; color: #1a1a1a;
+  border: 1.5px solid #ddd; border-radius: 8px;
+  font-size: 15px; font-weight: 600; font-family: inherit;
+  cursor: pointer; transition: background .15s, box-shadow .15s;
+  box-shadow: 0 1px 3px rgba(0,0,0,.08);
+}
+.ms-btn:hover:not(:disabled) {
+  background: #f8f8f8;
+  box-shadow: 0 2px 8px rgba(0,0,0,.12);
+}
+.ms-btn:disabled { opacity: .6; cursor: not-allowed; }
+.ms-btn-outline {
+  background: transparent; color: #C8102E;
+  border-color: #C8102E;
+}
+.ms-btn-outline:hover { background: #fdeaed; }
+
+.auth-footer { font-size: 11.5px; color: #aaa; text-align: center; margin: 0; line-height: 1.5; }
+
+.auth-spinner {
+  width: 18px; height: 18px;
+  border: 2px solid #ddd; border-top-color: #C8102E;
+  border-radius: 50%; animation: auth-spin .7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes auth-spin { to { transform: rotate(360deg); } }
+
+/* ── Centered card (access denied) ────────────────────────────────────── */
+.auth-center-card {
+  background: #fff; border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(0,0,0,.4);
+  padding: 56px 48px; max-width: 440px; width: 100%;
+  margin: 24px; text-align: center;
+  display: flex; flex-direction: column; gap: 14px;
+  align-items: center;
+}
+.auth-denied-icon { font-size: 52px; }
+.auth-center-card h2 { font-size: 24px; font-weight: 700; color: #C8102E; margin: 0; }
+.auth-center-card p  { font-size: 14px; color: #444; margin: 0; line-height: 1.6; }
+.auth-denied-hint    { font-size: 13px; color: #aaa; }
+
+/* ── Responsive ────────────────────────────────────────────────────────── */
+@media (max-width: 700px) {
+  .auth-split { flex-direction: column; }
+  .auth-panel-left { padding: 36px 28px; min-height: 180px; }
+  .auth-panel-right { width: 100%; padding: 36px 28px; }
+}

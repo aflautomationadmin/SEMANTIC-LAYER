@@ -1,0 +1,588 @@
+cubes:
+  - name: FactSapTSingleIr
+    sql_table: "fact_sap_t_single_ir"
+    title: "SAP Billing - Single IR"
+    description: >
+      Invoice-level billing fact table from SAP, sourced from Fabric warehouse.
+      Covers billing documents, tax lines, margins, and logistics details.
+
+    # ─────────────────────────────────────────────────────────────
+    # DIMENSIONS  (non-aggregated / group-by columns)
+    # ─────────────────────────────────────────────────────────────
+    dimensions:
+
+      # ── Identity ──────────────────────────────────────────────
+      - name: billing_doc
+        sql: BILLING_DOC
+        type: string
+        primary_key: true
+        title: "Billing Document"
+
+      - name: sap_doc_no
+        sql: SAP_DOC_NO
+        type: string
+        title: "SAP Document No"
+
+      - name: pos_reference_no
+        sql: POS_REFERENCE_NO
+        type: string
+        title: "POS Reference No"
+
+      - name: increff_invoice_number
+        sql: INCREFF_INVOICE_NUMBER
+        type: string
+        title: "Increff Invoice Number"
+
+      - name: lr_no
+        sql: LR_NO
+        type: string
+        title: "LR No"
+
+      - name: po_no
+        sql: PO__NO
+        type: string
+        title: "PO No"
+
+      # ── Billing Type & Status ──────────────────────────────────
+      - name: bill_type
+        sql: BILL_TYPE
+        type: string
+        title: "Bill Type"
+
+      - name: bill_type_description
+        sql: BILLTYPDESCRIPTION
+        type: string
+        title: "Bill Type Description"
+
+      - name: cancel_status
+        sql: CANCEL_STATUS
+        type: string
+        title: "Cancel Status"
+
+      - name: posting_status
+        sql: POSTING_STATUS
+        type: string
+        title: "Posting Status"
+
+      - name: dispatch_status
+        sql: DISPATCH_STATUS_TOTAL_GDS_MVT_STAT
+        type: string
+        title: "Dispatch Status (GDS Mvt)"
+
+      # ── Dates ─────────────────────────────────────────────────
+      # Data arrives as DATE from the Python sync script — no cast needed.
+      - name: bill_date
+        sql: BILL_DATE
+        type: time
+        title: "Bill Date"
+
+      - name: bill_creation_date
+        sql: BILL_CREATION_DATE
+        type: time
+        title: "Bill Creation Date"
+
+      - name: lr_date
+        sql: LR_DATE
+        type: time
+        title: "LR Date"
+
+      - name: ship_st_date
+        sql: SHIP_ST_DATE
+        type: time
+        title: "Shipment Start Date"
+
+      - name: ship_end_date
+        sql: SHIP_END_DATE
+        type: time
+        title: "Shipment End Date"
+
+      # ── Sales Organisation ─────────────────────────────────────
+      - name: sales_org
+        sql: SALES_ORG
+        type: string
+        title: "Sales Org"
+
+      - name: distr_channel
+        sql: DISTR_CHANNEL
+        type: string
+        title: "Distribution Channel"
+
+      - name: division
+        sql: DIVISION
+        type: string
+        title: "Division"
+
+      - name: customer_distr_channel
+        sql: CUSTOMER_DISTR_CHANNEL
+        type: string
+        title: "Customer Distribution Channel"
+
+      - name: profit_center
+        sql: PROFIT_CENTER
+        type: string
+        title: "Profit Center"
+
+      - name: revenue_gl
+        sql: REVENUE_GL
+        type: string
+        title: "Revenue GL"
+
+      - name: exchange_rate
+        sql: EXCHANGE_RATE
+        type: number
+        title: "Exchange Rate"
+
+      # ── Customer / Party ───────────────────────────────────────
+      - name: customer
+        sql: CUSTOMER
+        type: string
+        title: "Customer"
+
+      - name: cust_folio_code
+        sql: CUST_FOLIO_CODE
+        type: string
+        title: "Customer Folio Code"
+
+      - name: ship_to_party
+        sql: SHIP_TO_PARTY
+        type: string
+        title: "Ship-to Party"
+
+      - name: ship_description
+        sql: SHIP_DESCRIPTION
+        type: string
+        title: "Ship-to Description"
+
+      - name: ship_to_party_city
+        sql: SHIP_TO_PARTY_CITY
+        type: string
+        title: "Ship-to City"
+
+      - name: ship_to_postal_code
+        sql: SHIP_TO_POSTAL_CODE
+        type: string
+        title: "Ship-to Postal Code"
+
+      - name: ship_state
+        sql: SHIP_STATE
+        type: string
+        title: "Ship-to State"
+
+      - name: bill_to_party
+        sql: BILL_TO_PARTY
+        type: string
+        title: "Bill-to Party"
+
+      - name: bill_to_postal_code
+        sql: BILL_TO_POSTAL_CODE
+        type: string
+        title: "Bill-to Postal Code"
+
+      - name: bill_to_gstin
+        sql: BILL_TO_GSTIN
+        type: string
+        title: "Bill-to GSTIN"
+
+      - name: sold_description
+        sql: SOLD_DESCRIPTION
+        type: string
+        title: "Sold-to Description"
+
+      - name: payer_name
+        sql: PAYER_NAME
+        type: string
+        title: "Payer Name"
+
+      - name: name_2
+        sql: NAME_2
+        type: string
+        title: "Name 2"
+
+      - name: name_3
+        sql: NAME_3
+        type: string
+        title: "Name 3"
+
+      - name: payer_city
+        sql: PAYER_CITY
+        type: string
+        title: "Payer City"
+
+      - name: payee
+        sql: PAYEE
+        type: string
+        title: "Payee"
+
+      # ── GST / Tax Identity ─────────────────────────────────────
+      - name: customer_gstin
+        sql: CUSTOMER_GSTIN
+        type: string
+        title: "Customer GSTIN"
+
+      - name: plant_gstin
+        sql: PLANT_GSTIN
+        type: string
+        title: "Plant GSTIN"
+
+      - name: region
+        sql: REGION
+        type: string
+        title: "Region"
+
+      - name: tax_class
+        sql: TAX_CLASS
+        type: string
+        title: "Tax Class"
+
+      # ── Material / Product ─────────────────────────────────────
+      - name: mat_type
+        sql: MAT_TYPE
+        type: string
+        title: "Material Type"
+
+      - name: hsn
+        sql: HSN
+        type: string
+        title: "HSN Code"
+
+      - name: brand_id
+        sql: BRAND_ID
+        type: string
+        title: "Brand ID"
+
+      - name: brand_description
+        sql: BRAND_DESCRIPTION
+        type: string
+        title: "Brand Description"
+
+      - name: class_attribute
+        sql: CLASS_ATTRIBUTE
+        type: string
+        title: "Class Attribute"
+
+      # ── Plant / Logistics ──────────────────────────────────────
+      - name: plant
+        sql: PLANT
+        type: string
+        title: "Plant"
+
+      - name: plant_city
+        sql: PLANT_CITY
+        type: string
+        title: "Plant City"
+
+      - name: plant_pincode
+        sql: PLANT_PINCODE
+        type: string
+        title: "Plant Pincode"
+
+      - name: forwarding_agent
+        sql: FORWARDING_AGENT
+        type: string
+        title: "Forwarding Agent"
+
+      # ── Supply Chain / GST Location ────────────────────────────
+      - name: from_place_of_supply_city
+        sql: FROM_PLACE_OF_SUPPLY_CITY
+        type: string
+        title: "From Place of Supply City"
+
+      - name: from_pl_of_supp_state
+        sql: FROM_PL_OF_SUPP_STATE
+        type: string
+        title: "From Place of Supply State"
+
+      - name: to_place_of_supply_city
+        sql: TO_PLACE_OF_SUPPLY_CITY
+        type: string
+        title: "To Place of Supply City"
+
+      # ── Season ────────────────────────────────────────────────
+      - name: rollout_season
+        sql: ROLLOUT_SEASON
+        type: string
+        title: "Rollout Season"
+
+      - name: active_season
+        sql: ACTIVE_SEASON
+        type: string
+        title: "Active Season"
+
+    # ─────────────────────────────────────────────────────────────
+    # MEASURES  (aggregated columns)
+    # ─────────────────────────────────────────────────────────────
+    measures:
+
+      - name: count
+        type: count
+        title: "Record Count"
+
+      # ── Quantity ───────────────────────────────────────────────
+      - name: invoice_quantity
+        sql: INVOICE_QUANTITY
+        type: sum
+        title: "Invoice Quantity"
+
+      # ── Value / Pricing ────────────────────────────────────────
+      - name: mrp_value
+        sql: MRP_VALUE
+        type: sum
+        title: "MRP Value"
+        format: currency
+
+      - name: fixed_price
+        sql: FIXED_PRICE
+        type: sum
+        title: "Fixed Price"
+        format: currency
+
+      - name: pos_mrp_value
+        sql: POS_MRP_VALUE
+        type: sum
+        title: "POS MRP Value"
+        format: currency
+
+      - name: cost_price
+        sql: COST_PRICE
+        type: sum
+        title: "Cost Price"
+        format: currency
+
+      - name: sto_valuation
+        sql: STO_VALUATION
+        type: sum
+        title: "STO Valuation"
+        format: currency
+
+      # ── Discounts ──────────────────────────────────────────────
+      - name: discount1_ytrd
+        sql: DISCOUNT1_YTRD
+        type: sum
+        title: "Discount 1 (YTRD)"
+        format: currency
+
+      - name: discount2_yodd
+        sql: DISCOUNT2_YODD
+        type: sum
+        title: "Discount 2 (YODD)"
+        format: currency
+
+      - name: discount3_yo15
+        sql: DISCOUNT3_YO15
+        type: sum
+        title: "Discount 3 (YO15)"
+        format: currency
+
+      - name: reduction
+        sql: REDUCTION
+        type: sum
+        title: "Reduction"
+        format: currency
+
+      # ── Base Margins (Amount) ───────────────────────────────────
+      - name: base_margin_ys60
+        sql: BASE_MARGIN_YS60
+        type: sum
+        title: "Base Margin YS60"
+        format: currency
+
+      - name: base_margin_y007
+        sql: BASE_MARGIN_Y007
+        type: sum
+        title: "Base Margin Y007"
+        format: currency
+
+      - name: base_margin_y010_yafl
+        sql: BASE_MARGIN_Y010_YAFL
+        type: sum
+        title: "Base Margin Y010/YAFL"
+        format: currency
+
+      - name: base_margin_y014
+        sql: BASE_MARGIN_Y014
+        type: sum
+        title: "Base Margin Y014"
+        format: currency
+
+      # ── Base Margins (Rate) ─────────────────────────────────────
+      - name: base_margin_ys60_rate
+        sql: BASE_MARGIN_YS60_RATE
+        type: avg
+        title: "Base Margin YS60 Rate %"
+        format: percent
+
+      - name: base_margin_y007_rate
+        sql: BASE_MARGIN_Y007_RATE
+        type: avg
+        title: "Base Margin Y007 Rate %"
+        format: percent
+
+      - name: base_margin_y010_rate
+        sql: BASE_MARGIN_Y010_RATE
+        type: avg
+        title: "Base Margin Y010 Rate %"
+        format: percent
+
+      - name: base_margin_y014_rate
+        sql: BASE_MARGIN_Y014_RATE
+        type: avg
+        title: "Base Margin Y014 Rate %"
+        format: percent
+
+      # ── Special Margins (Amount) ────────────────────────────────
+      - name: total_special_margin
+        sql: TOTAL_SPECIAL_MARGIN
+        type: sum
+        title: "Total Special Margin"
+        format: currency
+
+      - name: special_margin_y003
+        sql: SPECIAL_MARGIN_Y003
+        type: sum
+        title: "Special Margin Y003"
+        format: currency
+
+      - name: special_margin_y006
+        sql: SPECIAL_MARGIN_Y006
+        type: sum
+        title: "Special Margin Y006"
+        format: currency
+
+      - name: special_margin_ygsr
+        sql: SPECIAL_MARGIN_YGSR
+        type: sum
+        title: "Special Margin YGSR"
+        format: currency
+
+      # ── Special Margins (Rate) ──────────────────────────────────
+      - name: special_margin_y003_rate
+        sql: SPECIAL_MARGIN_Y003_RATE
+        type: avg
+        title: "Special Margin Y003 Rate %"
+        format: percent
+
+      # ── Franchisee ─────────────────────────────────────────────
+      - name: franchisee_margin
+        sql: FRANCHISEE_MARGIN
+        type: sum
+        title: "Franchisee Margin"
+        format: currency
+
+      - name: franchisee_reimbursement_amount
+        sql: FRANCHISEE_REIMBURSEMENT_AMOUNT
+        type: sum
+        title: "Franchisee Reimbursement Amount"
+        format: currency
+
+      # ── Tax Base ───────────────────────────────────────────────
+      - name: taxable_amount
+        sql: TAXABLE_AMOUNT
+        type: sum
+        title: "Taxable Amount"
+        format: currency
+
+      # ── SGST ──────────────────────────────────────────────────
+      - name: sgst_tax_amount
+        sql: SGST_TAX_AMOUNT
+        type: sum
+        title: "SGST Tax Amount"
+        format: currency
+
+      - name: sgst_tax_rate
+        sql: SGST_TAX_RATE
+        type: avg
+        title: "SGST Tax Rate %"
+        format: percent
+
+      - name: sgst_rate
+        sql: SGST_RATE
+        type: avg
+        title: "SGST Rate %"
+        format: percent
+
+      - name: sgst_pay
+        sql: SGST_PAY
+        type: sum
+        title: "SGST Payable"
+        format: currency
+
+      - name: sgst_rec
+        sql: SGST_REC
+        type: sum
+        title: "SGST Receivable"
+        format: currency
+
+      # ── CGST ──────────────────────────────────────────────────
+      - name: cgst_tax_amount
+        sql: CGST_TAX_AMOUNT
+        type: sum
+        title: "CGST Tax Amount"
+        format: currency
+
+      - name: cgst_tax_rate
+        sql: CGST_TAX_RATE
+        type: avg
+        title: "CGST Tax Rate %"
+        format: percent
+
+      - name: cgst_rate
+        sql: CGST_RATE
+        type: avg
+        title: "CGST Rate %"
+        format: percent
+
+      - name: cgst_pay
+        sql: CGST_PAY
+        type: sum
+        title: "CGST Payable"
+        format: currency
+
+      - name: cgst_rec
+        sql: CGST_REC
+        type: sum
+        title: "CGST Receivable"
+        format: currency
+
+      # ── IGST ──────────────────────────────────────────────────
+      - name: igst_tax_amount
+        sql: IGST_TAX_AMOUNT
+        type: sum
+        title: "IGST Tax Amount"
+        format: currency
+
+      - name: igst_tax_rate
+        sql: IGST_TAX_RATE
+        type: avg
+        title: "IGST Tax Rate %"
+        format: percent
+
+      - name: igst_rate
+        sql: IGST_RATE
+        type: avg
+        title: "IGST Rate %"
+        format: percent
+
+      - name: igst_pay
+        sql: IGST_PAY
+        type: sum
+        title: "IGST Payable"
+        format: currency
+
+      - name: igst_rec
+        sql: IGST_REC
+        type: sum
+        title: "IGST Receivable"
+        format: currency
+
+      # ── Totals ─────────────────────────────────────────────────
+      - name: total_tax
+        sql: TOTAL_TAX
+        type: sum
+        title: "Total Tax"
+        format: currency
+
+      - name: total_amount
+        sql: TOTAL_AMOUNT
+        type: sum
+        title: "Total Amount"
+        format: currency
