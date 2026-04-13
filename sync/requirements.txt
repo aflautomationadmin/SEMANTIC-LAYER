@@ -2,3 +2,5 @@ pyodbc>=5.0
 duckdb>=0.10
 pandas>=2.0
 python-dotenv>=1.0
+flask>=3.0
+flask-cors>=4.0

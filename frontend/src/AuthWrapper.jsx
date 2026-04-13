@@ -108,10 +108,12 @@ export default function AuthWrapper({ children }) {
       return
     }
     const account = accounts[0]
-    setRbac({
-      displayName: account.name ?? account.username,
-      email:       account.username,
-      brands:      getBrandAccess(account.username),
+    getBrandAccess(account.username).then(brands => {
+      setRbac({
+        displayName: account.name ?? account.username,
+        email:       account.username,
+        brands,
+      })
     })
   }, [isAuthenticated, accounts])
 

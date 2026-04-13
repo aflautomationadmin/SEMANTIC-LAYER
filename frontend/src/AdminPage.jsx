@@ -214,17 +214,31 @@ function AddUserForm({ config, onSave }) {
 
 // ── Main Admin Page ───────────────────────────────────────────────────────
 export default function AdminPage({ currentUser, onBack }) {
-  const [config, setConfig] = useState(loadPermissions)
+  const [config, setConfig] = useState(null)
   const [editUser, setEditUser] = useState(null)
   const [tab, setTab]       = useState('users')  // 'users' | 'brands'
   const [search, setSearch] = useState('')
   const [saved, setSaved]   = useState(false)
 
-  const persist = (newConfig) => {
-    savePermissions(newConfig)
+  // Load permissions from API on mount
+  useEffect(() => {
+    loadPermissions().then(setConfig)
+  }, [])
+
+  const persist = async (newConfig) => {
     setConfig(newConfig)
+    await savePermissions(newConfig)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
+  }
+
+  // Show loading state while config is fetching
+  if (!config) {
+    return (
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', fontSize:14, color:'#888' }}>
+        Loading permissions…
+      </div>
+    )
   }
 
   const removeUser = (email) => {

@@ -1,7 +1,6 @@
 /**
  * RBAC — Brand access configuration.
- * Permissions are stored in localStorage so admin changes persist without a backend.
- * Falls back to DEFAULT_CONFIG on first run.
+ * Permissions are stored in permissions.duckdb via Flask API at /permissions-api/permissions
  */
 
 export const ALL_BRANDS = [
@@ -15,13 +14,10 @@ export const ALL_BRANDS = [
   'CALVIN KLEIN',
 ]
 
-const STORAGE_KEY = 'arvind_permissions_v1'
+const API_URL = '/permissions-api/permissions'
 
-// Seed config — used only when localStorage is empty
 const DEFAULT_CONFIG = {
-  admins: [
-    'automation.admin@arvindfashions.com',
-  ],
+  admins: ['automation.admin@arvindfashions.com'],
   brands: {
     'US POLO ASS.':   ['saifali.khan@arvindfashions.com'],
     'ARROW':          [],
@@ -34,16 +30,20 @@ const DEFAULT_CONFIG = {
   },
 }
 
-export function loadPermissions() {
+export async function loadPermissions() {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored) return JSON.parse(stored)
+    const res = await fetch(API_URL)
+    if (res.ok) return await res.json()
   } catch {}
   return structuredClone(DEFAULT_CONFIG)
 }
 
-export function savePermissions(config) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(config))
+export async function savePermissions(config) {
+  await fetch(API_URL, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(config),
+  })
 }
 
 /**
@@ -52,9 +52,9 @@ export function savePermissions(config) {
  *   string[]  – restricted to these brands
  *   null      – no access
  */
-export function getBrandAccess(email) {
+export async function getBrandAccess(email) {
   if (!email) return null
-  const config = loadPermissions()
+  const config = await loadPermissions()
   const e = email.toLowerCase()
 
   if (config.admins.some(a => a.toLowerCase() === e)) return []
