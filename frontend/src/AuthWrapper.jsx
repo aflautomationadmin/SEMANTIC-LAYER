@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMsal, useIsAuthenticated } from '@azure/msal-react'
 import { loginRequest, msalInstance } from './authConfig'
 import { getBrandAccess } from './brandPermissions'
+import arvindLogo from './assets/arvind-logo.png'
 import './AuthWrapper.css'
 
 // ── Microsoft logo (no external dependency) ──────────────────────────────
@@ -26,7 +27,7 @@ function LoginPage({ onLogin, loading }) {
         <div className="auth-panel-left">
           <div className="auth-brand">
             <div className="auth-logo-wrap">
-              <img src="/arvind-logo.png" alt="Arvind Fashions" className="auth-logo-img" />
+              <img src={arvindLogo} alt="Arvind Fashions" className="auth-logo-img" />
             </div>
             <h1>Arvind Analytics</h1>
             <p>Enterprise sales intelligence platform</p>
@@ -42,7 +43,7 @@ function LoginPage({ onLogin, loading }) {
         <div className="auth-panel-right">
           <div className="auth-card">
             <div className="auth-card-logo">
-              <img src="/arvind-logo.png" alt="Arvind Fashions" className="auth-card-logo-img" />
+              <img src={arvindLogo} alt="Arvind Fashions" className="auth-card-logo-img" />
             </div>
             <h2 className="auth-title">Welcome back</h2>
             <p className="auth-subtitle">

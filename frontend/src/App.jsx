@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { msalInstance } from './authConfig'
 import AdminPage from './AdminPage'
+import arvindLogo from './assets/arvind-logo.png'
 import './App.css'
 
 const CUBE_API = '/cubejs-api/v1'   // proxied by Apache → localhost:4000
@@ -435,7 +436,7 @@ export default function App({ user, allowedBrands }) {
       {/* ── Header ── */}
       <header className="header">
         <div className="logo">
-          <img src="/arvind-logo.png" alt="Arvind Fashions" className="logo-img" />
+          <img src={arvindLogo} alt="Arvind Fashions" className="logo-img" />
         </div>
         <div className="header-sub">POS / AIL Sales Explorer</div>
         <div className="header-user">

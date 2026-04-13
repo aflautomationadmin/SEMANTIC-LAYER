@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { ALL_BRANDS, loadPermissions, savePermissions } from './brandPermissions'
+import arvindLogo from './assets/arvind-logo.png'
 import './AdminPage.css'
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -245,7 +246,7 @@ export default function AdminPage({ currentUser, onBack }) {
       {/* ── Header ── */}
       <header className="admin-header">
         <div className="admin-header-left">
-          <img src="/arvind-logo.png" alt="Arvind" className="admin-logo" />
+          <img src={arvindLogo} alt="Arvind" className="admin-logo" />
           <div className="admin-title-wrap">
             <span className="admin-title">Access Management</span>
             <span className="admin-sub">Brand-level RBAC</span>
