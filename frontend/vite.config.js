@@ -6,6 +6,7 @@ export default defineConfig({
   build: {
     target: 'esnext',   // supports top-level await
   },
+  base: '/downloadui/',
   server: {
     port: 3000,
     proxy: {

@@ -3,7 +3,7 @@ import { msalInstance } from './authConfig'
 import AdminPage from './AdminPage'
 import './App.css'
 
-const CUBE_API = '/cubejs-api/v1'
+const CUBE_API = '/cubejs-api/v1'   // proxied by Apache → localhost:4000
 const CUBE_TOKEN = import.meta.env.VITE_CUBEJS_TOKEN || 'dev'
 
 // ── Filter config: all categorical dimensions ─────────────────────────────
