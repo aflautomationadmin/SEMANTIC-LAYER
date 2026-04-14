@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMsal, useIsAuthenticated } from '@azure/msal-react'
 import { loginRequest, msalInstance } from './authConfig'
 import { getBrandAccess } from './brandPermissions'
+import { logEvent } from './logger'
 import arvindLogo from './assets/arvind-logo.png'
 import './AuthWrapper.css'
 
@@ -109,10 +110,14 @@ export default function AuthWrapper({ children }) {
     }
     const account = accounts[0]
     getBrandAccess(account.username).then(brands => {
-      setRbac({
+      const rbac = {
         displayName: account.name ?? account.username,
         email:       account.username,
         brands,
+      }
+      setRbac(rbac)
+      logEvent(rbac, 'login', {
+        brands: brands === null ? 'denied' : brands.length === 0 ? 'all' : brands,
       })
     })
   }, [isAuthenticated, accounts])

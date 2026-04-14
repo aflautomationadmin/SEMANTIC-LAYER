@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { msalInstance } from './authConfig'
 import AdminPage from './AdminPage'
 import arvindLogo from './assets/arvind-logo.png'
+import { logEvent } from './logger'
 import './App.css'
 
 const CUBE_API = '/cubejs-api/v1'   // proxied by Apache → localhost:4000
@@ -362,8 +363,12 @@ export default function App({ user, allowedBrands }) {
   const loadData = useCallback(async () => {
     if (!fromDate || !toDate) return
     setLoading(true); setError(null); setPage(1); setTotalCount(null)
+    const t0 = Date.now()
     try {
       const filters = buildFilters()
+      const filterCount = Object.values(filterValues).filter(v =>
+        Array.isArray(v) ? v.length > 0 : v && v.trim()
+      ).length
       const [data, countResult] = await Promise.all([
         cubeLoad({
           dimensions: TABLE_COLUMNS.filter(c => c.dim).map(c => c.key),
@@ -377,9 +382,17 @@ export default function App({ user, allowedBrands }) {
           filters,
         }),
       ])
+      const rowCount = Number(countResult[0]?.['FactPosAilSales.count'] ?? 0)
       setRows(data)
-      setTotalCount(Number(countResult[0]?.['FactPosAilSales.count'] ?? 0))
+      setTotalCount(rowCount)
       setLoaded(true)
+      logEvent(user, 'load_data', {
+        from_date:    fromDate,
+        to_date:      toDate,
+        filter_count: filterCount,
+        row_count:    rowCount,
+        duration_ms:  Date.now() - t0,
+      })
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }, [fromDate, toDate, filterValues])
@@ -388,6 +401,9 @@ export default function App({ user, allowedBrands }) {
     setDlState({ fetched: 0, files: 0 })
     setError(null)
     try {
+      const filterCount = Object.values(filterValues).filter(v =>
+        Array.isArray(v) ? v.length > 0 : v && v.trim()
+      ).length
       const baseQuery = {
         dimensions: TABLE_COLUMNS.filter(c => c.dim).map(c => c.key),
         measures:   TABLE_COLUMNS.filter(c => !c.dim).map(c => c.key),
@@ -399,7 +415,17 @@ export default function App({ user, allowedBrands }) {
         fetched => setDlState({ fetched, files: Math.ceil(fetched / MAX_ROWS_FILE) })
       )
       setDlState(null)
-      if (totalRows === 0) setError('No data to download for the selected filters.')
+      if (totalRows === 0) {
+        setError('No data to download for the selected filters.')
+      } else {
+        logEvent(user, 'csv_export', {
+          from_date:    fromDate,
+          to_date:      toDate,
+          filter_count: filterCount,
+          total_rows:   totalRows,
+          files,
+        })
+      }
     } catch (e) {
       setDlState(null)
       setError(e.message)

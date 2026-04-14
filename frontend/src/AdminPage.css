@@ -381,4 +381,68 @@
   .brands-grid { grid-template-columns: 1fr; }
   .users-toolbar { flex-direction: column; align-items: flex-start; gap: 8px; }
   .search-input { width: 100%; }
+  .log-toolbar { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .log-filters { flex-wrap: wrap; }
 }
+
+/* ── Logs Tab ──────────────────────────────────────────────────────────── */
+.logs-section {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.08);
+  overflow: hidden;
+}
+
+.log-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; gap: 12px;
+  border-bottom: 1px solid #f0f0f0;
+  flex-wrap: wrap;
+}
+.log-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.log-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+
+.log-select {
+  height: 36px; padding: 0 10px; border-radius: 6px;
+  border: 1.5px solid #e0e0e0; font-size: 13px; font-family: inherit;
+  outline: none; background: #fff; cursor: pointer;
+  transition: border-color .15s;
+}
+.log-select:focus { border-color: #C8102E; }
+
+.log-date {
+  height: 36px; padding: 0 10px; border-radius: 6px;
+  border: 1.5px solid #e0e0e0; font-size: 13px; font-family: inherit;
+  outline: none; transition: border-color .15s;
+}
+.log-date:focus { border-color: #C8102E; }
+
+/* Action badges */
+.badge-action {
+  display: inline-flex; align-items: center;
+  padding: 3px 10px; border-radius: 20px;
+  font-size: 11px; font-weight: 700; white-space: nowrap;
+}
+.badge-login  { background: #e6f9ee; color: #1a7f4b; }
+.badge-load   { background: #eef3ff; color: #3b5bdb; }
+.badge-export { background: #fff4e0; color: #b45309; }
+
+/* Log table specifics */
+.log-table td { vertical-align: top; padding: 10px 16px; }
+.log-ts   { font-size: 12px; color: #666; white-space: nowrap; }
+.log-detail {
+  font-size: 11px; color: #666;
+  font-family: 'Consolas', 'Courier New', monospace;
+  max-width: 360px; word-break: break-word;
+}
+
+/* Pagination reuse */
+.pagination { display: flex; align-items: center; gap: 4px; }
+.page-btn {
+  min-width: 32px; height: 32px; padding: 0 8px;
+  border-radius: 5px; border: 1.5px solid #e0e0e0;
+  background: #fff; font-size: 13px; cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.page-btn:hover:not(:disabled) { border-color: #C8102E; color: #C8102E; }
+.page-btn:disabled { opacity: .4; cursor: default; }

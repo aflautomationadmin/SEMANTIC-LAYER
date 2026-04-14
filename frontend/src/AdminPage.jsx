@@ -286,6 +286,10 @@ export default function AdminPage({ currentUser, onBack }) {
             🏷️ Brands
             <span className="tab-count">{ALL_BRANDS.length}</span>
           </button>
+          <button className={`admin-tab ${tab === 'logs' ? 'active' : ''}`}
+            onClick={() => setTab('logs')}>
+            📋 Activity Log
+          </button>
         </div>
 
         {/* ── Users tab ── */}
@@ -414,6 +418,13 @@ export default function AdminPage({ currentUser, onBack }) {
             </div>
           </div>
         )}
+
+        {/* ── Logs tab ── */}
+        {tab === 'logs' && (
+          <div className="admin-content">
+            <LogsTab />
+          </div>
+        )}
       </div>
 
       {/* ── Edit modal ── */}
@@ -463,6 +474,184 @@ function QuickAddUser({ brand, config, onSave }) {
       />
       <button className="quick-btn" onClick={add}>+</button>
       {err && <span className="quick-err">{err}</span>}
+    </div>
+  )
+}
+
+// ── Activity Logs Tab ─────────────────────────────────────────────────────
+const ACTION_LABELS = {
+  login:      { label: 'Login',       cls: 'badge-login'  },
+  load_data:  { label: 'Load Data',   cls: 'badge-load'   },
+  csv_export: { label: 'CSV Export',  cls: 'badge-export' },
+}
+
+function fmtTs(ts) {
+  if (!ts) return '—'
+  const d = new Date(ts + 'Z')  // UTC → local
+  return d.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+function fmtDetails(action, details) {
+  if (!details || Object.keys(details).length === 0) return '—'
+  if (action === 'login') {
+    const b = details.brands
+    if (b === 'all')    return 'Full access'
+    if (b === 'denied') return 'Access denied'
+    if (Array.isArray(b)) return b.length ? b.join(', ') : 'No brands'
+  }
+  if (action === 'load_data') {
+    return `${details.from_date} → ${details.to_date}  ·  ${Number(details.row_count ?? 0).toLocaleString('en-IN')} rows  ·  ${details.filter_count ?? 0} filters  ·  ${details.duration_ms ?? 0}ms`
+  }
+  if (action === 'csv_export') {
+    return `${details.from_date} → ${details.to_date}  ·  ${Number(details.total_rows ?? 0).toLocaleString('en-IN')} rows  ·  ${details.files ?? 1} file(s)`
+  }
+  return JSON.stringify(details)
+}
+
+function LogsTab() {
+  const today        = new Date().toISOString().slice(0, 10)
+  const firstOfMonth = today.slice(0, 8) + '01'
+
+  const [logs,         setLogs]         = useState([])
+  const [total,        setTotal]        = useState(0)
+  const [loading,      setLoading]      = useState(false)
+  const [filterAction, setFilterAction] = useState('')
+  const [filterEmail,  setFilterEmail]  = useState('')
+  const [fromDate,     setFromDate]     = useState(firstOfMonth)
+  const [toDate,       setToDate]       = useState(today)
+  const [page,         setPage]         = useState(1)
+  const PAGE = 50
+
+  const fetchLogs = () => {
+    setLoading(true)
+    const params = new URLSearchParams({
+      limit:  PAGE,
+      offset: (page - 1) * PAGE,
+      ...(filterAction && { action: filterAction }),
+      ...(filterEmail  && { email:  filterEmail  }),
+      ...(fromDate     && { from_date: fromDate   }),
+      ...(toDate       && { to_date:   toDate     }),
+    })
+    fetch(`/permissions-api/logs?${params}`)
+      .then(r => r.json())
+      .then(d => { setLogs(d.logs || []); setTotal(d.total || 0) })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { fetchLogs() }, [page, filterAction, filterEmail, fromDate, toDate])
+
+  const totalPages = Math.ceil(total / PAGE)
+
+  const clearLogs = () => {
+    if (!window.confirm('Delete all activity logs? This cannot be undone.')) return
+    fetch('/permissions-api/logs', { method: 'DELETE' })
+      .then(() => { setLogs([]); setTotal(0); setPage(1) })
+      .catch(() => {})
+  }
+
+  const exportCSV = () => {
+    const header = 'Timestamp,User,Email,Action,Details'
+    const rows = logs.map(l =>
+      [`"${fmtTs(l.ts)}"`, `"${l.name}"`, `"${l.email}"`, `"${l.action}"`, `"${fmtDetails(l.action, l.details).replace(/"/g, '""')}"`].join(',')
+    )
+    const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `activity_logs_${today}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  return (
+    <div className="logs-section">
+      {/* Toolbar */}
+      <div className="log-toolbar">
+        <div className="log-filters">
+          <select
+            className="log-select"
+            value={filterAction}
+            onChange={e => { setFilterAction(e.target.value); setPage(1) }}
+          >
+            <option value="">All Actions</option>
+            <option value="login">Login</option>
+            <option value="load_data">Load Data</option>
+            <option value="csv_export">CSV Export</option>
+          </select>
+
+          <input
+            className="search-input"
+            placeholder="Filter by email…"
+            value={filterEmail}
+            onChange={e => { setFilterEmail(e.target.value); setPage(1) }}
+            style={{ width: 220 }}
+          />
+
+          <input type="date" className="log-date" value={fromDate} max={toDate}
+            onChange={e => { setFromDate(e.target.value); setPage(1) }} />
+          <span style={{ color: '#888', fontSize: 12 }}>→</span>
+          <input type="date" className="log-date" value={toDate} min={fromDate} max={today}
+            onChange={e => { setToDate(e.target.value); setPage(1) }} />
+        </div>
+
+        <div className="log-actions">
+          <span className="users-count">{total.toLocaleString('en-IN')} events</span>
+          <button className="btn-edit" onClick={exportCSV} disabled={logs.length === 0}>
+            ↓ Export CSV
+          </button>
+          <button className="btn-remove" onClick={clearLogs}>
+            Clear All
+          </button>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="users-table-wrap">
+        <table className="users-table log-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>User</th>
+              <th>Email</th>
+              <th>Action</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr><td colSpan={5} className="empty-row">Loading…</td></tr>
+            )}
+            {!loading && logs.length === 0 && (
+              <tr><td colSpan={5} className="empty-row">No activity logs found.</td></tr>
+            )}
+            {!loading && logs.map(l => {
+              const badge = ACTION_LABELS[l.action] || { label: l.action, cls: '' }
+              return (
+                <tr key={l.id}>
+                  <td className="log-ts">{fmtTs(l.ts)}</td>
+                  <td className="cell-email">{l.name || '—'}</td>
+                  <td style={{ fontSize: 12, color: '#555' }}>{l.email}</td>
+                  <td><span className={`badge-action ${badge.cls}`}>{badge.label}</span></td>
+                  <td className="log-detail">{fmtDetails(l.action, l.details)}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="pagination" style={{ padding: '12px 16px' }}>
+          <button className="page-btn" onClick={() => setPage(1)} disabled={page === 1}>«</button>
+          <button className="page-btn" onClick={() => setPage(p => p - 1)} disabled={page === 1}>‹</button>
+          <span style={{ padding: '0 12px', fontSize: 13, color: '#555' }}>
+            Page {page} / {totalPages}
+          </span>
+          <button className="page-btn" onClick={() => setPage(p => p + 1)} disabled={page === totalPages}>›</button>
+          <button className="page-btn" onClick={() => setPage(totalPages)} disabled={page === totalPages}>»</button>
+        </div>
+      )}
     </div>
   )
 }
