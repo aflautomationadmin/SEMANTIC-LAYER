@@ -226,10 +226,14 @@ async function downloadAll(baseQuery, onProgress) {
   return { totalRows, files: fileIndex }
 }
 
+// Sentinel value representing NULL / blank rows in the dataset
+const BLANK = '__blank__'
+
 // ── Multi-select dropdown (lazy loads options from Cube.js) ───────────────
 function MultiDropdown({ memberKey, selected, onChange }) {
   const [open, setOpen]         = useState(false)
-  const [options, setOptions]   = useState([])
+  const [options, setOptions]   = useState([])  // non-null values
+  const [hasBlank, setHasBlank] = useState(false)
   const [loading, setLoading]   = useState(false)
   const [fetched, setFetched]   = useState(false)
   const [search, setSearch]     = useState('')
@@ -244,34 +248,55 @@ function MultiDropdown({ memberKey, selected, onChange }) {
   useEffect(() => {
     if (!open || fetched) return
     setLoading(true)
-    cubeLoad({
-      dimensions: [memberKey],
-      measures:   ['FactPosAilSales.count'],
-      order:      { [memberKey]: 'asc' },
-      filters:    [{ member: memberKey, operator: 'set' }],
-    })
-      .then(data => { setOptions(data.map(r => r[memberKey]).filter(Boolean)); setFetched(true) })
+    // Fetch non-null values + check if any blank rows exist
+    Promise.all([
+      cubeLoad({
+        dimensions: [memberKey],
+        measures:   ['FactPosAilSales.count'],
+        order:      { [memberKey]: 'asc' },
+        filters:    [{ member: memberKey, operator: 'set' }],
+      }),
+      cubeLoad({
+        measures: ['FactPosAilSales.count'],
+        filters:  [{ member: memberKey, operator: 'notSet' }],
+      }),
+    ])
+      .then(([valData, blankData]) => {
+        setOptions(valData.map(r => r[memberKey]).filter(v => v !== null && v !== ''))
+        setHasBlank(Number(blankData[0]?.['FactPosAilSales.count'] ?? 0) > 0)
+        setFetched(true)
+      })
       .catch(() => setOptions([]))
       .finally(() => setLoading(false))
   }, [open, fetched, memberKey])
 
   const toggle = v => onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v])
+
+  // Search filters non-blank options; "(Blank)" always shows if exists and no search
   const visible = options.filter(o => !search || String(o).toLowerCase().includes(search.toLowerCase()))
-  const label   = selected.length === 0 ? 'All' : selected.length === 1 ? selected[0] : `${selected.length} selected`
+
+  const displayLabel = () => {
+    if (selected.length === 0) return 'All'
+    if (selected.length === 1) return selected[0] === BLANK ? '(Blank)' : selected[0]
+    const hasBlankSel = selected.includes(BLANK)
+    const others = selected.filter(v => v !== BLANK)
+    const parts = [...others, ...(hasBlankSel ? ['(Blank)'] : [])]
+    return parts.length === 1 ? parts[0] : `${parts.length} selected`
+  }
 
   return (
     <div className="fd" ref={ref}>
       <button
         className={`fd-trigger ${selected.length > 0 ? 'fd-active' : ''}`}
         onClick={() => setOpen(o => !o)}
-        title={selected.length > 0 ? selected.join(', ') : ''}
+        title={selected.filter(v => v !== BLANK).join(', ') + (selected.includes(BLANK) ? ' (Blank)' : '')}
       >
-        <span className="fd-label">{label}</span>
+        <span className="fd-label">{displayLabel()}</span>
         <span className="fd-arrow">{open ? '▲' : '▼'}</span>
       </button>
       {open && (
         <div className="fd-menu">
-          {options.length > 8 && (
+          {(options.length + (hasBlank ? 1 : 0)) > 8 && (
             <div className="fd-search-wrap">
               <input
                 className="fd-search"
@@ -284,8 +309,8 @@ function MultiDropdown({ memberKey, selected, onChange }) {
             </div>
           )}
           {loading && <div className="fd-info">Loading…</div>}
-          {!loading && visible.length === 0 && <div className="fd-info">No results</div>}
-          {!loading && visible.length > 0 && (
+          {!loading && visible.length === 0 && !hasBlank && <div className="fd-info">No results</div>}
+          {!loading && (
             <div className="fd-list">
               {!search && (
                 <>
@@ -301,6 +326,19 @@ function MultiDropdown({ memberKey, selected, onChange }) {
                   <span className="fd-opt-text">{o}</span>
                 </div>
               ))}
+              {/* Blank option — always at the bottom, hidden when searching */}
+              {hasBlank && !search && (
+                <>
+                  {visible.length > 0 && <div className="fd-sep" />}
+                  <div
+                    className={`fd-item fd-blank ${selected.includes(BLANK) ? 'fd-checked' : ''}`}
+                    onClick={() => toggle(BLANK)}
+                  >
+                    <span className="fd-box">{selected.includes(BLANK) ? '✓' : ''}</span>
+                    <span className="fd-opt-text fd-blank-label">(Blank)</span>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -352,10 +390,25 @@ export default function App({ user, allowedBrands }) {
       // Skip brand if RBAC lock is active (already injected above)
       if (key === 'FactPosAilSales.brand' && allowedBrands.length > 0) return
       const val = filterValues[key]
-      if (type === 'dropdown' && Array.isArray(val) && val.length > 0)
-        filters.push({ member: key, operator: 'equals', values: val })
-      else if (type === 'text' && val && val.trim())
+      if (type === 'dropdown' && Array.isArray(val) && val.length > 0) {
+        const nonBlank = val.filter(v => v !== BLANK)
+        const wantBlank = val.includes(BLANK)
+        if (nonBlank.length > 0 && wantBlank) {
+          // User wants specific values OR blank — use OR filter
+          filters.push({
+            or: [
+              { member: key, operator: 'equals',  values: nonBlank },
+              { member: key, operator: 'notSet' },
+            ]
+          })
+        } else if (nonBlank.length > 0) {
+          filters.push({ member: key, operator: 'equals', values: nonBlank })
+        } else if (wantBlank) {
+          filters.push({ member: key, operator: 'notSet' })
+        }
+      } else if (type === 'text' && val && val.trim()) {
         filters.push({ member: key, operator: 'contains', values: [val.trim()] })
+      }
     })
     return filters
   }

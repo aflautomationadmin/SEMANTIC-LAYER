@@ -230,6 +230,8 @@ body { font-family: 'Inter', sans-serif; background: #f0f0f0; color: var(--grey-
 .fd-opt-text { overflow: hidden; text-overflow: ellipsis; }
 .fd-sep { height: 1px; background: var(--grey-200); margin: 2px 0; }
 .fd-info { padding: 10px 12px; font-size: 12px; color: var(--grey-400); }
+.fd-blank-label { color: #999; font-style: italic; }
+.fd-blank.fd-checked .fd-blank-label { color: var(--red); font-style: italic; }
 
 /* ── Stats bar ─────────────────────────────────────────────────────────── */
 .stats-bar {
