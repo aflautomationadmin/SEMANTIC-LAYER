@@ -59,11 +59,11 @@ def _conn_str() -> str:
 # Cross-database join: Dataverse_Prod + Arvind_Analytics_Warehouse.
 # RTRANS_LINEITM_SEQ added to SELECT (it is in GROUP BY in source query).
 _SQL = """
-SELECT
+SELECT 
     f.COMPANY,
     f.REGION,
     f.STATE,
-    f.AIL_ORDER_STATE,
+    f.AIL_ORDER_STATE AS AIL_ORDER_STATE,
     f.CHANNEL,
     f.STORE_TYPE,
     f.OWNERSHIP_TYPE,
@@ -72,7 +72,7 @@ SELECT
     f.NAME,
     f.INVOICENO,
     f.AIL_ORDER_ID,
-    CAST(f.INVOICE_DATE AS DATE)    AS INVOICE_DATE,
+    CAST(f.INVOICE_DATE AS DATE) AS INVOICE_DATE,
     f.DAY,
     f.BRAND,
     f.SUBBRAND,
@@ -87,81 +87,98 @@ SELECT
     f.GENDER,
     f.BARCODE,
     f.SLEEVE,
-    NULL                            AS BASICCORE,
+    NULL AS BASICCORE,  -- Assuming you want a placeholder column
     f.INVOICETYPE,
     f.ITEM_ID,
     f.STYLECODE,
-    f.RTRANS_LINEITM_SEQ,
+    SUM(f.UNITMRP) AS UNITMRP,
+    SUM(f.QUANTITY) AS QUANTITY,
+    SUM(f.TOTAL_MRP) AS TOTAL_MRP,
+    SUM(f.DISCOUNT) AS TOTAL_DISCOUNT,
+    SUM(
+        ISNULL(f.DISCOUNT, 0)
+        - ISNULL(f.GST_REBATE, 0)
+        - ISNULL(f.GWP_DISC, 0)
+    ) AS Discount_excl,
+    SUM(CAST(f.GST_REBATE AS FLOAT)) AS GST_REBATE,
+    SUM(CAST(f.GWP_DISC AS FLOAT)) AS GWP_DISC,
+    
+    SUM(f.TAXABLE_AMOUNT) AS TAXABLE_AMOUNT,
+    SUM(f.TAXRATE) AS TAXRATE,
+    SUM(f.SGST) AS SGST,
+    SUM(f.CGST) AS CGST,
+    SUM(f.IGST) AS IGST,
+    SUM(f.CESS) AS CESS,
+    SUM(f.TAXAMT) AS TAXAMT,
+    SUM(f.NETAMT) AS NETAMT,
     f.MANUAL_DISC_REASON,
     f.EXTERNAL_SYSTEM,
     f.ORDERS,
     d.DIVISION,
     d.CATEGORY,
     d.FIT_DESC,
-    f.ITEM_DESCRIPTION,
+    f.[ITEM_DESCRIPTION],
     f.HSN_CODE,
     f.GSTNO,
     f.RPC,
-    f.QC_PASSED,
+	f.QC_PASSED,
     f.SCHEME_CODE,
     f.SCHEME_DESCRIPTION,
     f.ISSALESORDERCREATED,
-    f.OMUNIITEMID,
-    -- Measures
-    SUM(f.UNITMRP)                                                  AS UNITMRP,
-    SUM(f.QUANTITY)                                                 AS QUANTITY,
-    SUM(f.TOTAL_MRP)                                                AS TOTAL_MRP,
-    SUM(f.DISCOUNT)                                                 AS TOTAL_DISCOUNT,
-    SUM(
-        ISNULL(f.DISCOUNT, 0)
-        - ISNULL(f.GST_REBATE, 0)
-        - ISNULL(f.GWP_DISC, 0)
-    )                                                               AS DISCOUNT_EXCL,
-    SUM(f.GST_REBATE)                                               AS GST_REBATE,
-    SUM(f.GWP_DISC)                                                 AS GWP_DISC,
-    SUM(f.TAXABLE_AMOUNT)                                           AS TAXABLE_AMOUNT,
-    SUM(f.TAXRATE)                                                  AS TAXRATE,
-    SUM(f.SGST)                                                     AS SGST,
-    SUM(f.CGST)                                                     AS CGST,
-    SUM(f.IGST)                                                     AS IGST,
-    SUM(f.CESS)                                                     AS CESS,
-    SUM(f.TAXAMT)                                                   AS TAXAMT,
-    SUM(f.NETAMT)                                                   AS NETAMT
-
-FROM [Dataverse_Prod].[dbo].[V_FNO_AIL_POS_SALES_TC_ONLINE] f
+    f.OMUNIITEMID
+FROM  [prd].[FACT_FNO_SALES_TC_ONLINE_BASE] f
 LEFT JOIN (
     SELECT DISTINCT ARTICLE, DIVISION, CATEGORY, FIT_DESC
-    FROM [Arvind_Analytics_Warehouse].[prd].[DIM_SAP_ITEM_MASTER]
-) d ON f.SUPPLIERSTYLE = d.ARTICLE
-
-WHERE
-    f.INVOICENO IS NOT NULL
-    AND CAST(f.INVOICE_DATE AS DATE) >=
-        CASE
-            WHEN DAY(GETDATE()) = 1
-                THEN DATEADD(MONTH, -1, DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1))
-            ELSE DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
-        END
-    AND CAST(f.INVOICE_DATE AS DATE) <
-        CASE
-            WHEN DAY(GETDATE()) = 1
-                THEN DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
-            ELSE CAST(GETDATE() AS DATE)
-        END
-
+    FROM [Arvind_Analytics_Warehouse].[prd].[DIM_SAP_ITEM_MASTER]y
+) d
+ON f.SUPPLIERSTYLE = d.ARTICLE
 GROUP BY
-    f.COMPANY, f.REGION, f.STATE, f.AIL_ORDER_STATE, f.CHANNEL,
-    f.STORE_TYPE, f.OWNERSHIP_TYPE, f.SAP_STORECODE, f.XSTORE_STORECODE,
-    f.NAME, f.INVOICENO, f.AIL_ORDER_ID,
+    f.COMPANY,
+    f.REGION,
+    f.STATE,
+    f.AIL_ORDER_STATE,
+    f.CHANNEL,
+    f.STORE_TYPE,
+    f.OWNERSHIP_TYPE,
+    f.SAP_STORECODE,
+    f.XSTORE_STORECODE,
+    f.NAME,
+    f.INVOICENO,
+    f.AIL_ORDER_ID,
     CAST(f.INVOICE_DATE AS DATE),
-    f.DAY, f.BRAND, f.SUBBRAND, f.CLASS, f.SUBCLASS, f.SUPPLIERSTYLE,
-    f.ITEMSIZE, f.QUALITY, f.MATERIAL_TYPE, f.SEASON, f.COLOR, f.GENDER,
-    f.BARCODE, f.SLEEVE, f.INVOICETYPE, f.ITEM_ID, f.STYLECODE,
-    f.RTRANS_LINEITM_SEQ,
-    f.MANUAL_DISC_REASON, f.EXTERNAL_SYSTEM, f.ORDERS,
-    d.DIVISION, d.CATEGORY, d.FIT_DESC,
-    f.ITEM_DESCRIPTION, f.HSN_CODE, f.GSTNO, f.RPC, f.QC_PASSED,
-    f.SCHEME_CODE, f.SCHEME_DESCRIPTION, f.ISSALESORDERCREATED, f.OMUNIITEMID
+    f.DAY,
+    f.BRAND,
+    f.SUBBRAND,
+    f.CLASS,
+    f.SUBCLASS,
+    f.SUPPLIERSTYLE,
+    f.ITEMSIZE,
+    f.QUALITY,
+    f.MATERIAL_TYPE,
+    f.SEASON,
+    f.COLOR,
+    f.GENDER,
+    f.BARCODE,
+    f.SLEEVE,
+    f.INVOICETYPE,
+    f.ITEM_ID,
+    f.STYLECODE,
+    f.MANUAL_DISC_REASON,
+    f.EXTERNAL_SYSTEM,
+    f.ORDERS,
+    d.DIVISION,
+    d.CATEGORY,
+    d.FIT_DESC,
+    f.[ITEM_DESCRIPTION],
+	f.RTRANS_LINEITM_SEQ,
+    f.HSN_CODE,
+    f.GSTNO,
+    f.RPC,
+	f.QC_PASSED,
+    f.SCHEME_CODE,
+    f.SCHEME_DESCRIPTION,
+    f.ISSALESORDERCREATED,
+    f.OMUNIITEMID
 """
 
 
