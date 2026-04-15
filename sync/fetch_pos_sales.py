@@ -128,7 +128,7 @@ SELECT
     SUM(f.TAXAMT)                                                   AS TAXAMT,
     SUM(f.NETAMT)                                                   AS NETAMT
 
-FROM [prd].[FACT_FNO_SALES_TC_ONLINE_BASE] f f
+FROM [prd].[FACT_FNO_SALES_TC_ONLINE_BASE] f
 LEFT JOIN (
     SELECT DISTINCT ARTICLE, DIVISION, CATEGORY, FIT_DESC
     FROM [Arvind_Analytics_Warehouse].[prd].[DIM_SAP_ITEM_MASTER]
