@@ -117,8 +117,8 @@ SELECT
         - ISNULL(f.GST_REBATE, 0)
         - ISNULL(f.GWP_DISC, 0)
     )                                                               AS DISCOUNT_EXCL,
-    SUM(f.GST_REBATE)                                               AS GST_REBATE,
-    SUM(f.GWP_DISC)                                                 AS GWP_DISC,
+   SUM(CAST(f.GST_REBATE AS FLOAT))                                               AS GST_REBATE,
+    SUM(CAST(f.GWP_DISC AS FLOAT))                                                 AS GWP_DISC,
     SUM(f.TAXABLE_AMOUNT)                                           AS TAXABLE_AMOUNT,
     SUM(f.TAXRATE)                                                  AS TAXRATE,
     SUM(f.SGST)                                                     AS SGST,
