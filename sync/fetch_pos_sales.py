@@ -132,6 +132,20 @@ LEFT JOIN (
     FROM [Arvind_Analytics_Warehouse].[prd].[DIM_SAP_ITEM_MASTER]y
 ) d
 ON f.SUPPLIERSTYLE = d.ARTICLE
+WHERE  
+    f.INVOICENO IS NOT NULL
+    AND CAST(f.INVOICE_DATE AS DATE) >= 
+        CASE 
+            WHEN DAY(GETDATE()) = 1 
+                THEN DATEADD(MONTH, -1, DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)) 
+            ELSE DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
+        END
+    AND CAST(f.INVOICE_DATE AS DATE) < 
+        CASE 
+            WHEN DAY(GETDATE()) = 1 
+                THEN DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)
+            ELSE CAST(GETDATE() AS DATE)
+        END
 GROUP BY
     f.COMPANY,
     f.REGION,
