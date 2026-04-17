@@ -177,14 +177,25 @@ function rowToCSVLine(row) {
   return TABLE_COLUMNS.map(c => `"${String(row[c.key] ?? '').replace(/"/g, '""')}"`).join(',')
 }
 
+// Build a CSV Blob in batches of CHUNK_LINES lines.
+// Avoids JavaScript's max string length limit for large datasets.
+function buildCsvBlob(lines) {
+  const CHUNK = 10_000
+  const parts = [CSV_HEADER + '\n']
+  for (let i = 0; i < lines.length; i += CHUNK) {
+    parts.push(lines.slice(i, i + CHUNK).join('\n') + '\n')
+  }
+  return new Blob(parts, { type: 'text/csv;charset=utf-8;' })
+}
+
 // Fetches ALL matching rows from Cube.js in pages, bundles all CSVs into one ZIP.
-// onProgress(fetched, phase) — phase: 'fetching' | 'zipping'
+// onProgress(fetched, phase, zipPct) — phase: 'fetching' | 'zipping'
 async function downloadAll(baseQuery, onProgress) {
   const dateStr = new Date().toISOString().slice(0, 10)
   const zip     = new JSZip()
   let offset    = 0
   let fileIndex = 1
-  let fileLines = []   // lines for the current CSV file
+  let fileLines = []   // accumulated lines for the current CSV part
   let totalRows = 0
 
   // ── Phase 1: Fetch all pages from Cube.js ──────────────────────────────
@@ -196,10 +207,9 @@ async function downloadAll(baseQuery, onProgress) {
       fileLines.push(rowToCSVLine(row))
       totalRows++
 
-      // Split into multiple CSVs if > MAX_ROWS_FILE rows
+      // Split into multiple CSV parts if > MAX_ROWS_FILE rows
       if (fileLines.length >= MAX_ROWS_FILE) {
-        const content = [CSV_HEADER, ...fileLines].join('\n')
-        zip.file(`pos_sales_${dateStr}_part${fileIndex}.csv`, content)
+        zip.file(`pos_sales_${dateStr}_part${fileIndex}.csv`, buildCsvBlob(fileLines))
         fileIndex++
         fileLines = []
       }
@@ -211,23 +221,22 @@ async function downloadAll(baseQuery, onProgress) {
     offset += CUBE_PAGE
   }
 
-  // Flush the last (possibly partial) CSV
+  // Flush the last (possibly partial) CSV part
   if (fileLines.length > 0) {
-    const content = [CSV_HEADER, ...fileLines].join('\n')
-    zip.file(`pos_sales_${dateStr}_part${fileIndex}.csv`, content)
+    zip.file(`pos_sales_${dateStr}_part${fileIndex}.csv`, buildCsvBlob(fileLines))
   }
 
   const files = fileIndex
 
   // ── Phase 2: Generate ZIP blob ─────────────────────────────────────────
   onProgress(totalRows, 'zipping')
-  const blob = await zip.generateAsync(
+  const zipBlob = await zip.generateAsync(
     { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
     meta => onProgress(totalRows, 'zipping', meta.percent)
   )
 
   // ── Phase 3: Trigger single ZIP download ───────────────────────────────
-  const url = URL.createObjectURL(blob)
+  const url = URL.createObjectURL(zipBlob)
   const a   = document.createElement('a')
   a.href    = url
   a.download = `pos_sales_${dateStr}.zip`
