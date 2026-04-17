@@ -170,7 +170,7 @@ async function cubeLoad(query) {
 }
 
 const CUBE_PAGE      = 50_000    // rows per Cube.js request
-const MAX_ROWS_FILE  = 1_000_000 // max rows per CSV file (10 lakh)
+const MAX_ROWS_FILE  = 500_000   // max rows per CSV part (5 lakh) — keeps peak heap ~250 MB
 const CSV_HEADER     = TABLE_COLUMNS.map(c => c.label).join(',')
 
 function rowToCSVLine(row) {
