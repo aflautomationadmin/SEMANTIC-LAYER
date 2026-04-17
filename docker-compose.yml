@@ -1,5 +1,3 @@
-version: '2.2'
-
 services:
   cube:
     image: cubejs/cube:latest   # stock image — DuckDB driver is built in
@@ -7,6 +5,8 @@ services:
       - "4000:4000"             # REST API + Playground UI
       - "15432:15432"           # Cube SQL API (PostgreSQL wire protocol)
     env_file: .env
+    environment:
+      - NODE_OPTIONS=--max-old-space-size=8192   # allow Node.js to use up to 8 GB heap
     volumes:
       - .:/cube/conf            # mounts project root; data/fabric.duckdb lives here
     restart: unless-stopped
