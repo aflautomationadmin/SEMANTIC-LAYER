@@ -3,6 +3,7 @@ import { msalInstance } from './authConfig'
 import AdminPage from './AdminPage'
 import arvindLogo from './assets/arvind-logo.png'
 import { logEvent } from './logger'
+import JSZip from 'jszip'
 import './App.css'
 
 const CUBE_API = '/cubejs-api/v1'   // proxied by Apache → localhost:4000
@@ -176,25 +177,17 @@ function rowToCSVLine(row) {
   return TABLE_COLUMNS.map(c => `"${String(row[c.key] ?? '').replace(/"/g, '""')}"`).join(',')
 }
 
-function triggerDownload(lines, fileIndex, dateStr) {
-  const content = [CSV_HEADER, ...lines].join('\n')
-  const blob    = new Blob([content], { type: 'text/csv;charset=utf-8;' })
-  const url     = URL.createObjectURL(blob)
-  const a       = document.createElement('a')
-  a.href        = url
-  a.download    = `pos_sales_${dateStr}_part${fileIndex}.csv`
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
-// Fetches ALL matching rows from Cube.js in pages, splits into ≤10L-row CSV files.
+// Fetches ALL matching rows from Cube.js in pages, bundles all CSVs into one ZIP.
+// onProgress(fetched, phase) — phase: 'fetching' | 'zipping'
 async function downloadAll(baseQuery, onProgress) {
-  const dateStr  = new Date().toISOString().slice(0, 10)
-  let offset     = 0
-  let fileIndex  = 1
-  let fileLines  = []   // lines for the current file
-  let totalRows  = 0
+  const dateStr = new Date().toISOString().slice(0, 10)
+  const zip     = new JSZip()
+  let offset    = 0
+  let fileIndex = 1
+  let fileLines = []   // lines for the current CSV file
+  let totalRows = 0
 
+  // ── Phase 1: Fetch all pages from Cube.js ──────────────────────────────
   while (true) {
     const page = await cubeLoad({ ...baseQuery, limit: CUBE_PAGE, offset })
     if (!page.length) break
@@ -203,27 +196,45 @@ async function downloadAll(baseQuery, onProgress) {
       fileLines.push(rowToCSVLine(row))
       totalRows++
 
-      // When current file hits 10L rows, flush it and start a new one
+      // Split into multiple CSVs if > MAX_ROWS_FILE rows
       if (fileLines.length >= MAX_ROWS_FILE) {
-        triggerDownload(fileLines, fileIndex, dateStr)
+        const content = [CSV_HEADER, ...fileLines].join('\n')
+        zip.file(`pos_sales_${dateStr}_part${fileIndex}.csv`, content)
         fileIndex++
         fileLines = []
       }
     }
 
-    onProgress(totalRows)
+    onProgress(totalRows, 'fetching')
 
-    // If fewer rows than requested, we've reached the last page
     if (page.length < CUBE_PAGE) break
     offset += CUBE_PAGE
   }
 
-  // Flush the last (possibly partial) file
+  // Flush the last (possibly partial) CSV
   if (fileLines.length > 0) {
-    triggerDownload(fileLines, fileIndex, dateStr)
+    const content = [CSV_HEADER, ...fileLines].join('\n')
+    zip.file(`pos_sales_${dateStr}_part${fileIndex}.csv`, content)
   }
 
-  return { totalRows, files: fileIndex }
+  const files = fileIndex
+
+  // ── Phase 2: Generate ZIP blob ─────────────────────────────────────────
+  onProgress(totalRows, 'zipping')
+  const blob = await zip.generateAsync(
+    { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
+    meta => onProgress(totalRows, 'zipping', meta.percent)
+  )
+
+  // ── Phase 3: Trigger single ZIP download ───────────────────────────────
+  const url = URL.createObjectURL(blob)
+  const a   = document.createElement('a')
+  a.href    = url
+  a.download = `pos_sales_${dateStr}.zip`
+  a.click()
+  URL.revokeObjectURL(url)
+
+  return { totalRows, files }
 }
 
 // Sentinel value representing NULL / blank rows in the dataset
@@ -365,7 +376,7 @@ export default function App({ user, allowedBrands }) {
   const [error, setError]       = useState(null)
   const [page, setPage]         = useState(1)
   const [loaded, setLoaded]     = useState(false)
-  const [dlState, setDlState]   = useState(null)  // null | { fetched, files }
+  const [dlState, setDlState]   = useState(null)  // null | { phase, fetched, zipPct }
   const [totalCount, setTotalCount] = useState(null)
 
   const setFilter = (key, val) => setFilterValues(prev => ({ ...prev, [key]: val }))
@@ -451,7 +462,7 @@ export default function App({ user, allowedBrands }) {
   }, [fromDate, toDate, filterValues])
 
   const handleDownload = useCallback(async () => {
-    setDlState({ fetched: 0, files: 0 })
+    setDlState({ phase: 'fetching', fetched: 0, zipPct: 0 })
     setError(null)
     try {
       const filterCount = Object.values(filterValues).filter(v =>
@@ -465,7 +476,7 @@ export default function App({ user, allowedBrands }) {
       }
       const { totalRows, files } = await downloadAll(
         baseQuery,
-        fetched => setDlState({ fetched, files: Math.ceil(fetched / MAX_ROWS_FILE) })
+        (fetched, phase, zipPct = 0) => setDlState({ phase, fetched, zipPct })
       )
       setDlState(null)
       if (totalRows === 0) {
@@ -566,11 +577,14 @@ export default function App({ user, allowedBrands }) {
               {loading && <span className="spinner" />}
               {loading ? 'Loading…' : 'Load Data'}
             </button>
-            <button className="btn-outline" onClick={handleDownload}
+            <button className="btn-download" onClick={handleDownload}
               disabled={!!dlState || !loaded}>
-              {dlState
-                ? `↓ ${dlState.fetched.toLocaleString('en-IN')} rows…`
-                : '↓ Download CSV'}
+              {dlState ? (
+                <>
+                  <span className="spinner" />
+                  {dlState.phase === 'zipping' ? 'Zipping…' : 'Preparing…'}
+                </>
+              ) : '⬇ Download ZIP'}
             </button>
           </div>
         </section>
@@ -732,6 +746,38 @@ export default function App({ user, allowedBrands }) {
           </div>
         )}
       </main>
+
+      {/* ── Download progress bar (fixed bottom) ── */}
+      {dlState && (
+        <div className="dl-bar">
+          <div className="dl-bar-inner">
+            <div className="dl-bar-icon">⬇</div>
+            <div className="dl-bar-body">
+              <div className="dl-bar-labels">
+                <span className="dl-bar-phase">
+                  {dlState.phase === 'fetching'
+                    ? `Fetching rows… ${dlState.fetched.toLocaleString('en-IN')}${totalCount ? ' / ' + totalCount.toLocaleString('en-IN') : ''}`
+                    : `Creating ZIP… ${Math.round(dlState.zipPct)}%`}
+                </span>
+                <span className="dl-bar-hint">
+                  {dlState.phase === 'fetching' ? 'Please wait, do not close this tab' : 'Compressing your data'}
+                </span>
+              </div>
+              <div className="dl-progress-track">
+                <div
+                  className="dl-progress-fill"
+                  style={{
+                    width: dlState.phase === 'fetching'
+                      ? (totalCount ? `${Math.min(100, (dlState.fetched / totalCount) * 100)}%` : '100%')
+                      : `${dlState.zipPct}%`,
+                    animation: (!totalCount && dlState.phase === 'fetching') ? 'dl-indeterminate 1.4s ease infinite' : 'none',
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

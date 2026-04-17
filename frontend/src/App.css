@@ -104,7 +104,7 @@ body { font-family: 'Inter', sans-serif; background: #f0f0f0; color: var(--grey-
 .clear-btn:hover { background: var(--red-mid); }
 
 /* Action buttons */
-.btn-primary, .btn-outline {
+.btn-primary, .btn-outline, .btn-download {
   height: 36px; padding: 0 20px; border-radius: var(--r-sm);
   font-size: 13.5px; font-weight: 600; font-family: inherit;
   cursor: pointer; border: 2px solid var(--red);
@@ -116,13 +116,87 @@ body { font-family: 'Inter', sans-serif; background: #f0f0f0; color: var(--grey-
 .btn-primary:hover:not(:disabled) { background: var(--red-dark); border-color: var(--red-dark); }
 .btn-outline { background: var(--white); color: var(--red); }
 .btn-outline:hover:not(:disabled) { background: var(--red-light); }
-.btn-primary:disabled, .btn-outline:disabled { opacity: .4; cursor: not-allowed; }
+.btn-download {
+  background: #1a6b3a; border-color: #1a6b3a; color: var(--white);
+}
+.btn-download:hover:not(:disabled) { background: #145430; border-color: #145430; }
+.btn-primary:disabled, .btn-outline:disabled, .btn-download:disabled {
+  opacity: .4; cursor: not-allowed;
+}
 .spinner {
   width: 13px; height: 13px;
   border: 2px solid rgba(255,255,255,.35); border-top-color: white;
   border-radius: 50%; animation: spin .7s linear infinite; display: inline-block;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Download progress bar (fixed bottom) ──────────────────────────────── */
+.dl-bar {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  background: #1a1a2e;
+  color: #fff;
+  z-index: 9999;
+  padding: 14px 28px;
+  box-shadow: 0 -4px 24px rgba(0,0,0,.35);
+  animation: dl-slide-up .25s ease;
+}
+@keyframes dl-slide-up {
+  from { transform: translateY(100%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.dl-bar-inner {
+  max-width: 860px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.dl-bar-icon {
+  font-size: 26px;
+  flex-shrink: 0;
+  animation: dl-bounce .8s ease infinite alternate;
+}
+@keyframes dl-bounce {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-5px); }
+}
+.dl-bar-body { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.dl-bar-labels {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.dl-bar-phase {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: .01em;
+}
+.dl-bar-hint {
+  font-size: 12px;
+  opacity: .55;
+  white-space: nowrap;
+}
+.dl-progress-track {
+  width: 100%;
+  height: 8px;
+  background: rgba(255,255,255,.15);
+  border-radius: 99px;
+  overflow: hidden;
+}
+.dl-progress-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #2ecc71, #27ae60);
+  transition: width .35s ease;
+  min-width: 6px;
+}
+@keyframes dl-indeterminate {
+  0%   { width: 20%; transform: translateX(-100%); }
+  50%  { width: 50%; }
+  100% { width: 20%; transform: translateX(600%); }
+}
 
 /* ── Filter panel ──────────────────────────────────────────────────────── */
 .filter-panel {
@@ -389,7 +463,7 @@ body { font-family: 'Inter', sans-serif; background: #f0f0f0; color: var(--grey-
   .main { padding: 12px; }
   .top-bar { flex-direction: column; align-items: stretch; }
   .top-bar-right { justify-content: stretch; }
-  .btn-primary, .btn-outline { flex: 1; justify-content: center; }
+  .btn-primary, .btn-outline, .btn-download { flex: 1; justify-content: center; }
   .header-sub { display: none; }
   .filters-grid { grid-template-columns: 1fr 1fr; }
 }
