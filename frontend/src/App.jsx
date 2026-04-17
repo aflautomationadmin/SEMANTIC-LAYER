@@ -433,30 +433,43 @@ export default function App({ user, allowedBrands }) {
       const filterCount = Object.values(filterValues).filter(v =>
         Array.isArray(v) ? v.length > 0 : v && v.trim()
       ).length
-      const [data, countResult] = await Promise.all([
-        cubeLoad({
-          dimensions: TABLE_COLUMNS.filter(c => c.dim).map(c => c.key),
-          measures:   TABLE_COLUMNS.filter(c => !c.dim).map(c => c.key),
-          filters,
-          order: { 'FactPosAilSales.invoice_date': 'desc' },
-          limit: 50000,
-        }),
-        cubeLoad({
-          measures: ['FactPosAilSales.count'],
-          filters,
-        }),
-      ])
-      const rowCount = Number(countResult[0]?.['FactPosAilSales.count'] ?? 0)
+
+      // ── Primary data query (blocks UI while loading) ──────────────────────
+      const data = await cubeLoad({
+        dimensions: TABLE_COLUMNS.filter(c => c.dim).map(c => c.key),
+        measures:   TABLE_COLUMNS.filter(c => !c.dim).map(c => c.key),
+        filters,
+        order: { 'FactPosAilSales.invoice_date': 'desc' },
+        limit: 50000,
+      })
+
       setRows(data)
-      setTotalCount(rowCount)
       setLoaded(true)
+      // Show row count immediately from what we fetched — count query updates it
+      setTotalCount(data.length)
+
       logEvent(user, 'load_data', {
         from_date:    fromDate,
         to_date:      toDate,
         filter_count: filterCount,
-        row_count:    rowCount,
+        row_count:    data.length,
         duration_ms:  Date.now() - t0,
       })
+
+      // ── Count query — non-blocking, runs in background ────────────────────
+      // Updates the total count independently so a slow/failing count
+      // never hides already-loaded data.
+      cubeLoad({
+        measures: ['FactPosAilSales.count'],
+        filters,
+      })
+        .then(countResult => {
+          const n = Number(countResult[0]?.['FactPosAilSales.count'])
+          // Only update if we got a real number > 0; otherwise keep data.length
+          if (n > 0) setTotalCount(n)
+        })
+        .catch(() => { /* keep data.length shown above */ })
+
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }, [fromDate, toDate, filterValues])
@@ -651,9 +664,9 @@ export default function App({ user, allowedBrands }) {
         {loaded && !loading && (
           <div className="stats-bar">
             <span className="stat">
-              <strong>{totalCount?.toLocaleString('en-IN') ?? rows.length.toLocaleString('en-IN')}</strong> total rows
+              <strong>{(totalCount || rows.length).toLocaleString('en-IN')}</strong> total rows
             </span>
-            {totalCount > rows.length && (
+            {(totalCount || rows.length) > rows.length && (
               <>
                 <span className="sdot">·</span>
                 <span className="stat showing-badge">showing first <strong>{rows.length.toLocaleString('en-IN')}</strong></span>
@@ -756,7 +769,7 @@ export default function App({ user, allowedBrands }) {
               <div className="dl-bar-labels">
                 <span className="dl-bar-phase">
                   {dlState.phase === 'fetching'
-                    ? `Fetching rows… ${dlState.fetched.toLocaleString('en-IN')}${totalCount ? ' / ' + totalCount.toLocaleString('en-IN') : ''}`
+                    ? `Fetching rows… ${dlState.fetched.toLocaleString('en-IN')}${(totalCount || 0) > 0 ? ' / ' + (totalCount).toLocaleString('en-IN') : ''}`
                     : `Creating ZIP… ${Math.round(dlState.zipPct)}%`}
                 </span>
                 <span className="dl-bar-hint">
