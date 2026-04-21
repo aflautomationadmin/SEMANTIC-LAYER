@@ -391,8 +391,8 @@ _EXPORT_HEADERS = [
     'Ownership Type','SAP Store Code','Xstore Code','Store Name','Invoice No',
     'AIL Order ID','Invoice Date','Day','Brand','Sub-Brand','Class','Sub-Class',
     'Supplier Style','Size','Quality','Material Type','Season','Color',
-    'Gender','Barcode','Sleeve','Basic/Core','Invoice Type','Item ID','Style Code',
-    'Line Seq','Manual Disc Reason','External System','Orders',
+    'Gender','Barcode','Sleeve','Basic/Core','Invoice Type','Item ID','Style Code'
+    ,'Manual Disc Reason','External System','Orders',
     'Division','Category','Fit Desc','Item Description','HSN Code','GST No',
     'RPC','QC Passed','Scheme Code','Scheme Description','SO Created',
     'OmniChannel Item ID','Unit MRP','Quantity','Total MRP','Total Discount',

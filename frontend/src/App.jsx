@@ -61,7 +61,6 @@ const FILTER_CONFIG = [
   { key: 'GSTNO',               label: 'GST No',              type: 'text',     group: 'Tax' },
   { key: 'QC_PASSED',           label: 'QC Passed',           type: 'dropdown', group: 'Tax' },
   // Other
-  { key: 'RTRANS_LINEITM_SEQ',  label: 'Line Seq',            type: 'text',     group: 'Other' },
   { key: 'ORDERS',              label: 'Orders',              type: 'text',     group: 'Other' },
   { key: 'OMUNIITEMID',         label: 'OmniChannel Item ID', type: 'text',     group: 'Other' },
 ]
@@ -101,7 +100,6 @@ const TABLE_COLUMNS = [
   { key: 'INVOICETYPE',         label: 'Invoice Type'        },
   { key: 'ITEM_ID',             label: 'Item ID'             },
   { key: 'STYLECODE',           label: 'Style Code'          },
-  { key: 'RTRANS_LINEITM_SEQ',  label: 'Line Seq'            },
   { key: 'MANUAL_DISC_REASON',  label: 'Manual Disc Reason'  },
   { key: 'EXTERNAL_SYSTEM',     label: 'External System'     },
   { key: 'ORDERS',              label: 'Orders'              },
