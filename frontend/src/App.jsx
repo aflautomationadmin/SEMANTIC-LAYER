@@ -3,144 +3,140 @@ import { msalInstance } from './authConfig'
 import AdminPage from './AdminPage'
 import arvindLogo from './assets/arvind-logo.png'
 import { logEvent } from './logger'
-import JSZip from 'jszip'
+// JSZip removed — downloads are now server-side via /permissions-api/export
 import './App.css'
 
-const CUBE_API = '/cubejs-api/v1'   // proxied by Apache → localhost:4000
-const CUBE_TOKEN = import.meta.env.VITE_CUBEJS_TOKEN || 'dev'
+const DATA_API = '/permissions-api'   // Flask API — queries Fabric directly
 
-// ── Filter config: all categorical dimensions ─────────────────────────────
-// type: 'dropdown' → multi-select fetched from Cube.js
+// ── Filter config — keys are SQL column names (match ui.V_D365_SALES) ────
+// type: 'dropdown' → multi-select (values fetched from /data/values)
 // type: 'text'     → free-text contains search
 const FILTER_CONFIG = [
   // Store / Location
-  { key: 'FactPosAilSales.company',             label: 'Company',             type: 'dropdown', group: 'Store' },
-  { key: 'FactPosAilSales.region',              label: 'Region',              type: 'dropdown', group: 'Store' },
-  { key: 'FactPosAilSales.state',               label: 'State',               type: 'dropdown', group: 'Store' },
-  { key: 'FactPosAilSales.ail_order_state',     label: 'AIL Order State',     type: 'dropdown', group: 'Store' },
-  { key: 'FactPosAilSales.channel',             label: 'Channel',             type: 'dropdown', group: 'Store' },
-  { key: 'FactPosAilSales.store_type',          label: 'Store Type',          type: 'dropdown', group: 'Store' },
-  { key: 'FactPosAilSales.ownership_type',      label: 'Ownership Type',      type: 'dropdown', group: 'Store' },
-  { key: 'FactPosAilSales.sap_storecode',       label: 'SAP Store Code',      type: 'text',     group: 'Store' },
-  { key: 'FactPosAilSales.xstore_storecode',    label: 'Xstore Code',         type: 'text',     group: 'Store' },
-  { key: 'FactPosAilSales.name',                label: 'Store Name',          type: 'text',     group: 'Store' },
+  { key: 'COMPANY',             label: 'Company',             type: 'dropdown', group: 'Store' },
+  { key: 'REGION',              label: 'Region',              type: 'dropdown', group: 'Store' },
+  { key: 'STATE',               label: 'State',               type: 'dropdown', group: 'Store' },
+  { key: 'AIL_ORDER_STATE',     label: 'AIL Order State',     type: 'dropdown', group: 'Store' },
+  { key: 'CHANNEL',             label: 'Channel',             type: 'dropdown', group: 'Store' },
+  { key: 'STORE_TYPE',          label: 'Store Type',          type: 'dropdown', group: 'Store' },
+  { key: 'OWNERSHIP_TYPE',      label: 'Ownership Type',      type: 'dropdown', group: 'Store' },
+  { key: 'SAP_STORECODE',       label: 'SAP Store Code',      type: 'text',     group: 'Store' },
+  { key: 'XSTORE_STORECODE',    label: 'Xstore Code',         type: 'text',     group: 'Store' },
+  { key: 'NAME',                label: 'Store Name',          type: 'text',     group: 'Store' },
   // Invoice
-  { key: 'FactPosAilSales.invoiceno',           label: 'Invoice No',          type: 'text',     group: 'Invoice' },
-  { key: 'FactPosAilSales.ail_order_id',        label: 'AIL Order ID',        type: 'text',     group: 'Invoice' },
-  { key: 'FactPosAilSales.invoicetype',         label: 'Invoice Type',        type: 'dropdown', group: 'Invoice' },
-  { key: 'FactPosAilSales.day',                 label: 'Day',                 type: 'dropdown', group: 'Invoice' },
-  { key: 'FactPosAilSales.external_system',     label: 'External System',     type: 'dropdown', group: 'Invoice' },
-  { key: 'FactPosAilSales.issalesordercreated', label: 'SO Created',          type: 'dropdown', group: 'Invoice' },
+  { key: 'INVOICENO',           label: 'Invoice No',          type: 'text',     group: 'Invoice' },
+  { key: 'AIL_ORDER_ID',        label: 'AIL Order ID',        type: 'text',     group: 'Invoice' },
+  { key: 'INVOICETYPE',         label: 'Invoice Type',        type: 'dropdown', group: 'Invoice' },
+  { key: 'DAY',                 label: 'Day',                 type: 'dropdown', group: 'Invoice' },
+  { key: 'EXTERNAL_SYSTEM',     label: 'External System',     type: 'dropdown', group: 'Invoice' },
+  { key: 'ISSALESORDERCREATED', label: 'SO Created',          type: 'dropdown', group: 'Invoice' },
   // Product
-  { key: 'FactPosAilSales.brand',               label: 'Brand',               type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.subbrand',            label: 'Sub-Brand',           type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.division',            label: 'Division',            type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.category',            label: 'Category',            type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.class',               label: 'Class',               type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.subclass',            label: 'Sub-Class',           type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.season',              label: 'Season',              type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.color',               label: 'Color',               type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.gender',              label: 'Gender',              type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.sleeve',              label: 'Sleeve',              type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.material_type',       label: 'Material Type',       type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.quality',             label: 'Quality',             type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.fit_desc',            label: 'Fit Desc',            type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.basiccore',           label: 'Basic/Core',          type: 'dropdown', group: 'Product' },
-  { key: 'FactPosAilSales.supplierstyle',       label: 'Supplier Style',      type: 'text',     group: 'Product' },
-  { key: 'FactPosAilSales.stylecode',           label: 'Style Code',          type: 'text',     group: 'Product' },
-  { key: 'FactPosAilSales.item_id',             label: 'Item ID',             type: 'text',     group: 'Product' },
-  { key: 'FactPosAilSales.item_description',    label: 'Item Description',    type: 'text',     group: 'Product' },
-  { key: 'FactPosAilSales.barcode',             label: 'Barcode',             type: 'text',     group: 'Product' },
-  { key: 'FactPosAilSales.itemsize',            label: 'Size',                type: 'text',     group: 'Product' },
-  { key: 'FactPosAilSales.hsn_code',            label: 'HSN Code',            type: 'text',     group: 'Product' },
-  { key: 'FactPosAilSales.rpc',                 label: 'RPC',                 type: 'text',     group: 'Product' },
+  { key: 'BRAND',               label: 'Brand',               type: 'dropdown', group: 'Product' },
+  { key: 'SUBBRAND',            label: 'Sub-Brand',           type: 'dropdown', group: 'Product' },
+  { key: 'DIVISION',            label: 'Division',            type: 'dropdown', group: 'Product' },
+  { key: 'CATEGORY',            label: 'Category',            type: 'dropdown', group: 'Product' },
+  { key: 'CLASS',               label: 'Class',               type: 'dropdown', group: 'Product' },
+  { key: 'SUBCLASS',            label: 'Sub-Class',           type: 'dropdown', group: 'Product' },
+  { key: 'SEASON',              label: 'Season',              type: 'dropdown', group: 'Product' },
+  { key: 'COLOR',               label: 'Color',               type: 'dropdown', group: 'Product' },
+  { key: 'GENDER',              label: 'Gender',              type: 'dropdown', group: 'Product' },
+  { key: 'SLEEVE',              label: 'Sleeve',              type: 'dropdown', group: 'Product' },
+  { key: 'MATERIAL_TYPE',       label: 'Material Type',       type: 'dropdown', group: 'Product' },
+  { key: 'QUALITY',             label: 'Quality',             type: 'dropdown', group: 'Product' },
+  { key: 'FIT_DESC',            label: 'Fit Desc',            type: 'dropdown', group: 'Product' },
+  { key: 'BASICCORE',           label: 'Basic/Core',          type: 'dropdown', group: 'Product' },
+  { key: 'SUPPLIERSTYLE',       label: 'Supplier Style',      type: 'text',     group: 'Product' },
+  { key: 'STYLECODE',           label: 'Style Code',          type: 'text',     group: 'Product' },
+  { key: 'ITEM_ID',             label: 'Item ID',             type: 'text',     group: 'Product' },
+  { key: 'ITEM_DESCRIPTION',    label: 'Item Description',    type: 'text',     group: 'Product' },
+  { key: 'BARCODE',             label: 'Barcode',             type: 'text',     group: 'Product' },
+  { key: 'ITEMSIZE',            label: 'Size',                type: 'text',     group: 'Product' },
+  { key: 'HSN_CODE',            label: 'HSN Code',            type: 'text',     group: 'Product' },
+  { key: 'RPC',                 label: 'RPC',                 type: 'text',     group: 'Product' },
   // Scheme / Discount
-  { key: 'FactPosAilSales.scheme_code',         label: 'Scheme Code',         type: 'text',     group: 'Scheme' },
-  { key: 'FactPosAilSales.scheme_description',  label: 'Scheme Description',  type: 'text',     group: 'Scheme' },
-  { key: 'FactPosAilSales.manual_disc_reason',  label: 'Manual Disc Reason',  type: 'dropdown', group: 'Scheme' },
+  { key: 'SCHEME_CODE',         label: 'Scheme Code',         type: 'text',     group: 'Scheme' },
+  { key: 'SCHEME_DESCRIPTION',  label: 'Scheme Description',  type: 'text',     group: 'Scheme' },
+  { key: 'MANUAL_DISC_REASON',  label: 'Manual Disc Reason',  type: 'dropdown', group: 'Scheme' },
   // Tax / GST
-  { key: 'FactPosAilSales.gstno',               label: 'GST No',              type: 'text',     group: 'Tax' },
-  { key: 'FactPosAilSales.qc_passed',           label: 'QC Passed',           type: 'dropdown', group: 'Tax' },
+  { key: 'GSTNO',               label: 'GST No',              type: 'text',     group: 'Tax' },
+  { key: 'QC_PASSED',           label: 'QC Passed',           type: 'dropdown', group: 'Tax' },
   // Other
-  { key: 'FactPosAilSales.rtrans_lineitm_seq',  label: 'Line Seq',            type: 'text',     group: 'Other' },
-  { key: 'FactPosAilSales.orders',              label: 'Orders',              type: 'text',     group: 'Other' },
-  { key: 'FactPosAilSales.omuniitemid',         label: 'OmniChannel Item ID', type: 'text',     group: 'Other' },
+  { key: 'RTRANS_LINEITM_SEQ',  label: 'Line Seq',            type: 'text',     group: 'Other' },
+  { key: 'ORDERS',              label: 'Orders',              type: 'text',     group: 'Other' },
+  { key: 'OMUNIITEMID',         label: 'OmniChannel Item ID', type: 'text',     group: 'Other' },
 ]
 
 const GROUPS = ['Store', 'Invoice', 'Product', 'Scheme', 'Tax', 'Other']
 
-// ── All columns in exact SQL SELECT order ─────────────────────────────────
+// ── All columns — keys match SQL column names from ui.V_D365_SALES ────────
 const TABLE_COLUMNS = [
-  { key: 'FactPosAilSales.company',             label: 'Company',             dim: true  },
-  { key: 'FactPosAilSales.region',              label: 'Region',              dim: true  },
-  { key: 'FactPosAilSales.state',               label: 'State',               dim: true  },
-  { key: 'FactPosAilSales.ail_order_state',     label: 'AIL Order State',     dim: true  },
-  { key: 'FactPosAilSales.channel',             label: 'Channel',             dim: true  },
-  { key: 'FactPosAilSales.store_type',          label: 'Store Type',          dim: true  },
-  { key: 'FactPosAilSales.ownership_type',      label: 'Ownership Type',      dim: true  },
-  { key: 'FactPosAilSales.sap_storecode',       label: 'SAP Store Code',      dim: true  },
-  { key: 'FactPosAilSales.xstore_storecode',    label: 'Xstore Code',         dim: true  },
-  { key: 'FactPosAilSales.name',                label: 'Store Name',          dim: true  },
-  { key: 'FactPosAilSales.invoiceno',           label: 'Invoice No',          dim: true  },
-  { key: 'FactPosAilSales.ail_order_id',        label: 'AIL Order ID',        dim: true  },
-  { key: 'FactPosAilSales.invoice_date',        label: 'Invoice Date',        dim: true  },
-  { key: 'FactPosAilSales.day',                 label: 'Day',                 dim: true  },
-  { key: 'FactPosAilSales.brand',               label: 'Brand',               dim: true  },
-  { key: 'FactPosAilSales.subbrand',            label: 'Sub-Brand',           dim: true  },
-  { key: 'FactPosAilSales.class',               label: 'Class',               dim: true  },
-  { key: 'FactPosAilSales.subclass',            label: 'Sub-Class',           dim: true  },
-  { key: 'FactPosAilSales.supplierstyle',       label: 'Supplier Style',      dim: true  },
-  { key: 'FactPosAilSales.itemsize',            label: 'Size',                dim: true  },
-  { key: 'FactPosAilSales.quality',             label: 'Quality',             dim: true  },
-  { key: 'FactPosAilSales.material_type',       label: 'Material Type',       dim: true  },
-  { key: 'FactPosAilSales.season',              label: 'Season',              dim: true  },
-  { key: 'FactPosAilSales.color',               label: 'Color',               dim: true  },
-  { key: 'FactPosAilSales.gender',              label: 'Gender',              dim: true  },
-  { key: 'FactPosAilSales.barcode',             label: 'Barcode',             dim: true  },
-  { key: 'FactPosAilSales.sleeve',              label: 'Sleeve',              dim: true  },
-  { key: 'FactPosAilSales.basiccore',           label: 'Basic/Core',          dim: true  },
-  { key: 'FactPosAilSales.invoicetype',         label: 'Invoice Type',        dim: true  },
-  { key: 'FactPosAilSales.item_id',             label: 'Item ID',             dim: true  },
-  { key: 'FactPosAilSales.stylecode',           label: 'Style Code',          dim: true  },
-  { key: 'FactPosAilSales.rtrans_lineitm_seq',  label: 'Line Seq',            dim: true  },
-  { key: 'FactPosAilSales.manual_disc_reason',  label: 'Manual Disc Reason',  dim: true  },
-  { key: 'FactPosAilSales.external_system',     label: 'External System',     dim: true  },
-  { key: 'FactPosAilSales.orders',              label: 'Orders',              dim: true  },
-  { key: 'FactPosAilSales.division',            label: 'Division',            dim: true  },
-  { key: 'FactPosAilSales.category',            label: 'Category',            dim: true  },
-  { key: 'FactPosAilSales.fit_desc',            label: 'Fit Desc',            dim: true  },
-  { key: 'FactPosAilSales.item_description',    label: 'Item Description',    dim: true  },
-  { key: 'FactPosAilSales.hsn_code',            label: 'HSN Code',            dim: true  },
-  { key: 'FactPosAilSales.gstno',               label: 'GST No',              dim: true  },
-  { key: 'FactPosAilSales.rpc',                 label: 'RPC',                 dim: true  },
-  { key: 'FactPosAilSales.qc_passed',           label: 'QC Passed',           dim: true  },
-  { key: 'FactPosAilSales.scheme_code',         label: 'Scheme Code',         dim: true  },
-  { key: 'FactPosAilSales.scheme_description',  label: 'Scheme Description',  dim: true  },
-  { key: 'FactPosAilSales.issalesordercreated', label: 'SO Created',          dim: true  },
-  { key: 'FactPosAilSales.omuniitemid',         label: 'OmniChannel Item ID', dim: true  },
-  { key: 'FactPosAilSales.unitmrp',             label: 'Unit MRP',            dim: false },
-  { key: 'FactPosAilSales.quantity',            label: 'Quantity',            dim: false },
-  { key: 'FactPosAilSales.total_mrp',           label: 'Total MRP',           dim: false },
-  { key: 'FactPosAilSales.total_discount',      label: 'Total Discount',      dim: false },
-  { key: 'FactPosAilSales.discount_excl',       label: 'Discount Excl.',      dim: false },
-  { key: 'FactPosAilSales.gst_rebate',          label: 'GST Rebate',          dim: false },
-  { key: 'FactPosAilSales.gwp_disc',            label: 'GWP Disc',            dim: false },
-  { key: 'FactPosAilSales.taxable_amount',      label: 'Taxable Amount',      dim: false },
-  { key: 'FactPosAilSales.taxrate',             label: 'Tax Rate',            dim: false },
-  { key: 'FactPosAilSales.sgst',                label: 'SGST',                dim: false },
-  { key: 'FactPosAilSales.cgst',                label: 'CGST',                dim: false },
-  { key: 'FactPosAilSales.igst',                label: 'IGST',                dim: false },
-  { key: 'FactPosAilSales.cess',                label: 'CESS',                dim: false },
-  { key: 'FactPosAilSales.taxamt',              label: 'Tax Amount',          dim: false },
-  { key: 'FactPosAilSales.netamt',              label: 'Net Amount',          dim: false },
+  { key: 'COMPANY',             label: 'Company'             },
+  { key: 'REGION',              label: 'Region'              },
+  { key: 'STATE',               label: 'State'               },
+  { key: 'AIL_ORDER_STATE',     label: 'AIL Order State'     },
+  { key: 'CHANNEL',             label: 'Channel'             },
+  { key: 'STORE_TYPE',          label: 'Store Type'          },
+  { key: 'OWNERSHIP_TYPE',      label: 'Ownership Type'      },
+  { key: 'SAP_STORECODE',       label: 'SAP Store Code'      },
+  { key: 'XSTORE_STORECODE',    label: 'Xstore Code'         },
+  { key: 'NAME',                label: 'Store Name'          },
+  { key: 'INVOICENO',           label: 'Invoice No'          },
+  { key: 'AIL_ORDER_ID',        label: 'AIL Order ID'        },
+  { key: 'INVOICE_DATE',        label: 'Invoice Date'        },
+  { key: 'DAY',                 label: 'Day'                 },
+  { key: 'BRAND',               label: 'Brand'               },
+  { key: 'SUBBRAND',            label: 'Sub-Brand'           },
+  { key: 'CLASS',               label: 'Class'               },
+  { key: 'SUBCLASS',            label: 'Sub-Class'           },
+  { key: 'SUPPLIERSTYLE',       label: 'Supplier Style'      },
+  { key: 'ITEMSIZE',            label: 'Size'                },
+  { key: 'QUALITY',             label: 'Quality'             },
+  { key: 'MATERIAL_TYPE',       label: 'Material Type'       },
+  { key: 'SEASON',              label: 'Season'              },
+  { key: 'COLOR',               label: 'Color'               },
+  { key: 'GENDER',              label: 'Gender'              },
+  { key: 'BARCODE',             label: 'Barcode'             },
+  { key: 'SLEEVE',              label: 'Sleeve'              },
+  { key: 'BASICCORE',           label: 'Basic/Core'          },
+  { key: 'INVOICETYPE',         label: 'Invoice Type'        },
+  { key: 'ITEM_ID',             label: 'Item ID'             },
+  { key: 'STYLECODE',           label: 'Style Code'          },
+  { key: 'RTRANS_LINEITM_SEQ',  label: 'Line Seq'            },
+  { key: 'MANUAL_DISC_REASON',  label: 'Manual Disc Reason'  },
+  { key: 'EXTERNAL_SYSTEM',     label: 'External System'     },
+  { key: 'ORDERS',              label: 'Orders'              },
+  { key: 'DIVISION',            label: 'Division'            },
+  { key: 'CATEGORY',            label: 'Category'            },
+  { key: 'FIT_DESC',            label: 'Fit Desc'            },
+  { key: 'ITEM_DESCRIPTION',    label: 'Item Description'    },
+  { key: 'HSN_CODE',            label: 'HSN Code'            },
+  { key: 'GSTNO',               label: 'GST No'              },
+  { key: 'RPC',                 label: 'RPC'                 },
+  { key: 'QC_PASSED',           label: 'QC Passed'           },
+  { key: 'SCHEME_CODE',         label: 'Scheme Code'         },
+  { key: 'SCHEME_DESCRIPTION',  label: 'Scheme Description'  },
+  { key: 'ISSALESORDERCREATED', label: 'SO Created'          },
+  { key: 'OMUNIITEMID',         label: 'OmniChannel Item ID' },
+  { key: 'UNITMRP',             label: 'Unit MRP'            },
+  { key: 'QUANTITY',            label: 'Quantity'            },
+  { key: 'TOTAL_MRP',           label: 'Total MRP'           },
+  { key: 'TOTAL_DISCOUNT',      label: 'Total Discount'      },
+  { key: 'DISCOUNT_EXCL',       label: 'Discount Excl.'      },
+  { key: 'GST_REBATE',          label: 'GST Rebate'          },
+  { key: 'GWP_DISC',            label: 'GWP Disc'            },
+  { key: 'TAXABLE_AMOUNT',      label: 'Taxable Amount'      },
+  { key: 'TAXRATE',             label: 'Tax Rate'            },
+  { key: 'SGST',                label: 'SGST'                },
+  { key: 'CGST',                label: 'CGST'                },
+  { key: 'IGST',                label: 'IGST'                },
+  { key: 'CESS',                label: 'CESS'                },
+  { key: 'TAXAMT',              label: 'Tax Amount'          },
+  { key: 'NETAMT',              label: 'Net Amount'          },
 ]
 
 const CURRENCY_COLS = new Set([
-  'FactPosAilSales.unitmrp', 'FactPosAilSales.total_mrp', 'FactPosAilSales.total_discount',
-  'FactPosAilSales.discount_excl', 'FactPosAilSales.gst_rebate', 'FactPosAilSales.gwp_disc',
-  'FactPosAilSales.taxable_amount', 'FactPosAilSales.taxrate', 'FactPosAilSales.sgst',
-  'FactPosAilSales.cgst', 'FactPosAilSales.igst', 'FactPosAilSales.cess',
-  'FactPosAilSales.taxamt', 'FactPosAilSales.netamt',
+  'UNITMRP','TOTAL_MRP','TOTAL_DISCOUNT','DISCOUNT_EXCL','GST_REBATE','GWP_DISC',
+  'TAXABLE_AMOUNT','TAXRATE','SGST','CGST','IGST','CESS','TAXAMT','NETAMT',
 ])
 
 const PAGE_SIZE = 50
@@ -149,108 +145,54 @@ function fmt(key, val) {
   if (val == null || val === '') return '—'
   if (CURRENCY_COLS.has(key))
     return '₹' + Number(val).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  if (key === 'FactPosAilSales.quantity')
+  if (key === 'QUANTITY')
     return Number(val).toLocaleString('en-IN')
-  if (key === 'FactPosAilSales.invoice_date')
+  if (key === 'INVOICE_DATE')
     return String(val).slice(0, 10)
   return val
 }
 
-async function cubeLoad(query) {
-  const res = await fetch(`${CUBE_API}/load`, {
+async function fabricLoad(path, body) {
+  const res = await fetch(`${DATA_API}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: CUBE_TOKEN },
-    body: JSON.stringify({ query }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.error || `HTTP ${res.status}`)
   }
-  return (await res.json()).data || []
+  return res.json()
 }
 
-const CUBE_PAGE      = 50_000    // rows per Cube.js request
-const MAX_ROWS_FILE  = 500_000   // max rows per CSV part (5 lakh) — keeps peak heap ~250 MB
-const CSV_HEADER     = TABLE_COLUMNS.map(c => c.label).join(',')
+// Build the server-side export URL from current filters.
+// Flask /export queries Fabric directly — no Cube.js involved.
+// fd_ prefix = dropdown (IN filter), ft_ prefix = text (LIKE contains filter)
+function buildExportUrl(fromDate, toDate, allowedBrands, filterValues) {
+  const params = new URLSearchParams()
+  params.set('from_date', fromDate)
+  params.set('to_date',   toDate)
 
-function rowToCSVLine(row) {
-  return TABLE_COLUMNS.map(c => `"${String(row[c.key] ?? '').replace(/"/g, '""')}"`).join(',')
-}
+  // RBAC brand restriction
+  allowedBrands.forEach(b => params.append('brand', b))
 
-// Build a CSV Blob in batches of CHUNK_LINES lines.
-// Avoids JavaScript's max string length limit for large datasets.
-function buildCsvBlob(lines) {
-  const CHUNK = 10_000
-  const parts = [CSV_HEADER + '\n']
-  for (let i = 0; i < lines.length; i += CHUNK) {
-    parts.push(lines.slice(i, i + CHUNK).join('\n') + '\n')
-  }
-  return new Blob(parts, { type: 'text/csv;charset=utf-8;' })
-}
-
-// Fetches ALL matching rows from Cube.js in pages, bundles all CSVs into one ZIP.
-// onProgress(fetched, phase, zipPct) — phase: 'fetching' | 'zipping'
-async function downloadAll(baseQuery, onProgress) {
-  const dateStr = new Date().toISOString().slice(0, 10)
-  const zip     = new JSZip()
-  let offset    = 0
-  let fileIndex = 1
-  let fileLines = []   // accumulated lines for the current CSV part
-  let totalRows = 0
-
-  // ── Phase 1: Fetch all pages from Cube.js ──────────────────────────────
-  while (true) {
-    const page = await cubeLoad({ ...baseQuery, limit: CUBE_PAGE, offset })
-    if (!page.length) break
-
-    for (const row of page) {
-      fileLines.push(rowToCSVLine(row))
-      totalRows++
-
-      // Split into multiple CSV parts if > MAX_ROWS_FILE rows
-      if (fileLines.length >= MAX_ROWS_FILE) {
-        zip.file(`pos_sales_${dateStr}_part${fileIndex}.csv`, buildCsvBlob(fileLines))
-        fileIndex++
-        fileLines = []
-      }
+  FILTER_CONFIG.forEach(({ key, type }) => {
+    const val = filterValues[key]
+    if (type === 'dropdown' && Array.isArray(val) && val.length > 0) {
+      val.forEach(v => params.append(`fd_${key}`, v))   // fd_ = dropdown / IN
+    } else if (type === 'text' && val && val.trim()) {
+      params.set(`ft_${key}`, val.trim())                // ft_ = text / LIKE
     }
+  })
 
-    onProgress(totalRows, 'fetching')
-
-    if (page.length < CUBE_PAGE) break
-    offset += CUBE_PAGE
-  }
-
-  // Flush the last (possibly partial) CSV part
-  if (fileLines.length > 0) {
-    zip.file(`pos_sales_${dateStr}_part${fileIndex}.csv`, buildCsvBlob(fileLines))
-  }
-
-  const files = fileIndex
-
-  // ── Phase 2: Generate ZIP blob ─────────────────────────────────────────
-  onProgress(totalRows, 'zipping')
-  const zipBlob = await zip.generateAsync(
-    { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
-    meta => onProgress(totalRows, 'zipping', meta.percent)
-  )
-
-  // ── Phase 3: Trigger single ZIP download ───────────────────────────────
-  const url = URL.createObjectURL(zipBlob)
-  const a   = document.createElement('a')
-  a.href    = url
-  a.download = `pos_sales_${dateStr}.zip`
-  a.click()
-  URL.revokeObjectURL(url)
-
-  return { totalRows, files }
+  return `/permissions-api/export?${params.toString()}`
 }
 
 // Sentinel value representing NULL / blank rows in the dataset
 const BLANK = '__blank__'
 
-// ── Multi-select dropdown (lazy loads options from Cube.js) ───────────────
-function MultiDropdown({ memberKey, selected, onChange }) {
+// ── Multi-select dropdown (lazy loads options from Fabric via /data/values) ──
+function MultiDropdown({ column, fromDate, toDate, allowedBrands, selected, onChange }) {
   const [open, setOpen]         = useState(false)
   const [options, setOptions]   = useState([])  // non-null values
   const [hasBlank, setHasBlank] = useState(false)
@@ -258,6 +200,9 @@ function MultiDropdown({ memberKey, selected, onChange }) {
   const [fetched, setFetched]   = useState(false)
   const [search, setSearch]     = useState('')
   const ref = useRef()
+
+  // Reset fetch cache whenever date range changes so options stay relevant
+  useEffect(() => { setFetched(false); setOptions([]) }, [fromDate, toDate])
 
   useEffect(() => {
     const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
@@ -268,31 +213,22 @@ function MultiDropdown({ memberKey, selected, onChange }) {
   useEffect(() => {
     if (!open || fetched) return
     setLoading(true)
-    // Fetch non-null values + check if any blank rows exist
-    Promise.all([
-      cubeLoad({
-        dimensions: [memberKey],
-        measures:   ['FactPosAilSales.count'],
-        order:      { [memberKey]: 'asc' },
-        filters:    [{ member: memberKey, operator: 'set' }],
-      }),
-      cubeLoad({
-        measures: ['FactPosAilSales.count'],
-        filters:  [{ member: memberKey, operator: 'notSet' }],
-      }),
-    ])
-      .then(([valData, blankData]) => {
-        setOptions(valData.map(r => r[memberKey]).filter(v => v !== null && v !== ''))
-        setHasBlank(Number(blankData[0]?.['FactPosAilSales.count'] ?? 0) > 0)
+    const params = new URLSearchParams({ column, from_date: fromDate, to_date: toDate })
+    allowedBrands.forEach(b => params.append('brand', b))
+    fetch(`/permissions-api/data/values?${params}`)
+      .then(r => r.json())
+      .then(data => {
+        setOptions(data.values || [])
+        setHasBlank(!!data.has_blank)
         setFetched(true)
       })
       .catch(() => setOptions([]))
       .finally(() => setLoading(false))
-  }, [open, fetched, memberKey])
+  }, [open, fetched, column, fromDate, toDate])
 
   const toggle = v => onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v])
 
-  // Search filters non-blank options; "(Blank)" always shows if exists and no search
+  // Search filters non-blank options; "(Blank)" always shows when exists and no search term
   const visible = options.filter(o => !search || String(o).toLowerCase().includes(search.toLowerCase()))
 
   const displayLabel = () => {
@@ -396,62 +332,38 @@ export default function App({ user, allowedBrands }) {
 
   const clearFilters = () => setFilterValues({})
 
-  const buildFilters = () => {
-    const filters = [{
-      member: 'FactPosAilSales.invoice_date',
-      operator: 'inDateRange',
-      values: [fromDate, toDate],
-    }]
-    // RBAC: mandatory brand restriction when user is not full-access
-    if (allowedBrands && allowedBrands.length > 0) {
-      filters.push({ member: 'FactPosAilSales.brand', operator: 'equals', values: allowedBrands })
-    }
-    FILTER_CONFIG.forEach(({ key, type }) => {
-      // Skip brand if RBAC lock is active (already injected above)
-      if (key === 'FactPosAilSales.brand' && allowedBrands.length > 0) return
-      const val = filterValues[key]
-      if (type === 'dropdown' && Array.isArray(val) && val.length > 0) {
-        const nonBlank = val.filter(v => v !== BLANK)
-        const wantBlank = val.includes(BLANK)
-        if (nonBlank.length > 0 && wantBlank) {
-          // User wants specific values OR blank — use OR filter
-          filters.push({
-            or: [
-              { member: key, operator: 'equals',  values: nonBlank },
-              { member: key, operator: 'notSet' },
-            ]
-          })
-        } else if (nonBlank.length > 0) {
-          filters.push({ member: key, operator: 'equals', values: nonBlank })
-        } else if (wantBlank) {
-          filters.push({ member: key, operator: 'notSet' })
-        }
-      } else if (type === 'text' && val && val.trim()) {
-        filters.push({ member: key, operator: 'contains', values: [val.trim()] })
-      }
-    })
-    return filters
-  }
-
   const loadData = useCallback(async () => {
     if (!fromDate || !toDate) return
     setLoading(true); setError(null); setPage(1); setTotalCount(null)
     const t0 = Date.now()
     try {
-      const filters = buildFilters()
       const filterCount = Object.values(filterValues).filter(v =>
         Array.isArray(v) ? v.length > 0 : v && v.trim()
       ).length
 
-      // ── Primary data query (blocks UI while loading) ──────────────────────
-      const data = await cubeLoad({
-        dimensions: TABLE_COLUMNS.filter(c => c.dim).map(c => c.key),
-        measures:   TABLE_COLUMNS.filter(c => !c.dim).map(c => c.key),
-        filters,
-        order: { 'FactPosAilSales.invoice_date': 'desc' },
-        limit: 50000,
+      // Build filter dicts for the Flask API — keys are SQL column names
+      const dropdownFilters = {}
+      const textFilters = {}
+      FILTER_CONFIG.forEach(({ key, type }) => {
+        const val = filterValues[key]
+        if (type === 'dropdown' && Array.isArray(val) && val.length > 0) {
+          dropdownFilters[key] = val
+        } else if (type === 'text' && val && val.trim()) {
+          textFilters[key] = val.trim()
+        }
       })
 
+      // ── Primary data query (blocks UI while loading) ──────────────────────
+      const result = await fabricLoad('/data/load', {
+        from_date:      fromDate,
+        to_date:        toDate,
+        filters:        dropdownFilters,
+        text_filters:   textFilters,
+        allowed_brands: allowedBrands,
+        limit:          50000,
+      })
+
+      const data = result.data || []
       setRows(data)
       setLoaded(true)
       // Show row count immediately from what we fetched — count query updates it
@@ -466,57 +378,87 @@ export default function App({ user, allowedBrands }) {
       })
 
       // ── Count query — non-blocking, runs in background ────────────────────
-      // Updates the total count independently so a slow/failing count
-      // never hides already-loaded data.
-      cubeLoad({
-        measures: ['FactPosAilSales.count'],
-        filters,
+      // Updates the total count so users know the true result set size even
+      // when data is capped at 50 000 rows.
+      fabricLoad('/data/load', {
+        from_date:      fromDate,
+        to_date:        toDate,
+        filters:        dropdownFilters,
+        text_filters:   textFilters,
+        allowed_brands: allowedBrands,
+        count_only:     true,
       })
-        .then(countResult => {
-          const n = Number(countResult[0]?.['FactPosAilSales.count'])
-          // Only update if we got a real number > 0; otherwise keep data.length
-          if (n > 0) setTotalCount(n)
-        })
+        .then(r => { if (r.count > 0) setTotalCount(r.count) })
         .catch(() => { /* keep data.length shown above */ })
 
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
-  }, [fromDate, toDate, filterValues])
+  }, [fromDate, toDate, filterValues, allowedBrands])
 
   const handleDownload = useCallback(async () => {
-    setDlState({ phase: 'fetching', fetched: 0, zipPct: 0 })
+    const filterCount = Object.values(filterValues).filter(v =>
+      Array.isArray(v) ? v.length > 0 : v && v.trim()
+    ).length
+
+    setDlState({ phase: 'preparing', pct: 0 })
     setError(null)
+
     try {
-      const filterCount = Object.values(filterValues).filter(v =>
-        Array.isArray(v) ? v.length > 0 : v && v.trim()
-      ).length
-      const baseQuery = {
-        dimensions: TABLE_COLUMNS.filter(c => c.dim).map(c => c.key),
-        measures:   TABLE_COLUMNS.filter(c => !c.dim).map(c => c.key),
-        filters:    buildFilters(),
-        order:      { 'FactPosAilSales.invoice_date': 'desc' },
+      const url = buildExportUrl(fromDate, toDate, allowedBrands, filterValues)
+
+      // Phase 1 — server is querying Fabric and building the ZIP
+      const res = await fetch(url)
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || `Server error ${res.status}`)
       }
-      const { totalRows, files } = await downloadAll(
-        baseQuery,
-        (fetched, phase, zipPct = 0) => setDlState({ phase, fetched, zipPct })
-      )
-      setDlState(null)
-      if (totalRows === 0) {
-        setError('No data to download for the selected filters.')
-      } else {
-        logEvent(user, 'csv_export', {
-          from_date:    fromDate,
-          to_date:      toDate,
-          filter_count: filterCount,
-          total_rows:   totalRows,
-          files,
-        })
+
+      // Phase 2 — ZIP is ready, browser is receiving bytes
+      setDlState({ phase: 'downloading', pct: 0 })
+
+      // Stream the response with progress tracking
+      const contentLength = Number(res.headers.get('content-length') || 0)
+      let received = 0
+      const reader  = res.body.getReader()
+      const chunks  = []
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(value)
+        received += value.length
+        if (contentLength > 0) {
+          setDlState({ phase: 'downloading', pct: Math.round((received / contentLength) * 100) })
+        }
       }
+
+      // Phase 3 — trigger browser save
+      setDlState({ phase: 'saving', pct: 100 })
+      const blob   = new Blob(chunks, { type: 'application/zip' })
+      const objUrl = URL.createObjectURL(blob)
+      const a      = document.createElement('a')
+      a.href     = objUrl
+      a.download = `pos_sales_${fromDate}_to_${toDate}.zip`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(objUrl), 2000)
+
+      // Brief "done" flash before dismissing
+      setDlState({ phase: 'done', pct: 100 })
+      setTimeout(() => setDlState(null), 1500)
+
+      logEvent(user, 'csv_export', {
+        from_date:    fromDate,
+        to_date:      toDate,
+        filter_count: filterCount,
+      })
     } catch (e) {
+      setError(`Download failed: ${e.message}`)
       setDlState(null)
-      setError(e.message)
     }
-  }, [fromDate, toDate, filterValues])
+  }, [fromDate, toDate, filterValues, allowedBrands])
 
   const [sortCol, setSortCol] = useState(null)
   const [sortDir, setSortDir] = useState('asc')
@@ -530,7 +472,7 @@ export default function App({ user, allowedBrands }) {
   const sortedRows = sortCol ? [...rows].sort((a, b) => {
     const av = a[sortCol] ?? ''
     const bv = b[sortCol] ?? ''
-    const isNum = CURRENCY_COLS.has(sortCol) || sortCol === 'FactPosAilSales.quantity'
+    const isNum = CURRENCY_COLS.has(sortCol) || sortCol === 'QUANTITY'
     const cmp = isNum ? Number(av) - Number(bv) : String(av).localeCompare(String(bv))
     return sortDir === 'asc' ? cmp : -cmp
   }) : rows
@@ -604,7 +546,9 @@ export default function App({ user, allowedBrands }) {
               {dlState ? (
                 <>
                   <span className="spinner" />
-                  {dlState.phase === 'zipping' ? 'Zipping…' : 'Preparing…'}
+                  {dlState.phase === 'preparing'   ? 'Preparing…'  :
+                   dlState.phase === 'downloading' ? 'Downloading…' :
+                   dlState.phase === 'saving'      ? 'Saving…'     : 'Done'}
                 </>
               ) : '⬇ Download ZIP'}
             </button>
@@ -639,7 +583,7 @@ export default function App({ user, allowedBrands }) {
               {groupFilters(activeGroup).map(({ key, label, type }) => (
                 <div key={key} className="f-cell">
                   <label className="f-label">{label}</label>
-                  {key === 'FactPosAilSales.brand' && allowedBrands.length > 0 ? (
+                  {key === 'BRAND' && allowedBrands.length > 0 ? (
                     <div className="brand-chips-locked">
                       {allowedBrands.map(b => (
                         <span key={b} className="brand-chip">🔒 {b}</span>
@@ -647,7 +591,10 @@ export default function App({ user, allowedBrands }) {
                     </div>
                   ) : type === 'dropdown' ? (
                     <MultiDropdown
-                      memberKey={key}
+                      column={key}
+                      fromDate={fromDate}
+                      toDate={toDate}
+                      allowedBrands={allowedBrands}
                       selected={filterValues[key] || []}
                       onChange={val => setFilter(key, val)}
                     />
@@ -685,11 +632,11 @@ export default function App({ user, allowedBrands }) {
             <span className="stat">Page <strong>{page}</strong> / <strong>{totalPages || 1}</strong></span>
             <span className="sdot">·</span>
             <span className="stat">
-              Qty: <strong>{rows.reduce((s, r) => s + (Number(r['FactPosAilSales.quantity']) || 0), 0).toLocaleString('en-IN')}</strong>
+              Qty: <strong>{rows.reduce((s, r) => s + (Number(r['QUANTITY']) || 0), 0).toLocaleString('en-IN')}</strong>
             </span>
             <span className="sdot">·</span>
             <span className="stat">
-              Net: <strong>₹{rows.reduce((s, r) => s + (Number(r['FactPosAilSales.netamt']) || 0), 0)
+              Net: <strong>₹{rows.reduce((s, r) => s + (Number(r['NETAMT']) || 0), 0)
                 .toLocaleString('en-IN', { minimumFractionDigits: 2 })}</strong>
             </span>
           </div>
@@ -732,7 +679,7 @@ export default function App({ user, allowedBrands }) {
                     <tr key={i}>
                       {TABLE_COLUMNS.map(c => (
                         <td key={c.key}
-                          className={CURRENCY_COLS.has(c.key) || c.key === 'FactPosAilSales.quantity' ? 'num' : ''}>
+                          className={CURRENCY_COLS.has(c.key) || c.key === 'QUANTITY' ? 'num' : ''}>
                           {fmt(c.key, row[c.key])}
                         </td>
                       ))}
@@ -773,27 +720,36 @@ export default function App({ user, allowedBrands }) {
       {dlState && (
         <div className="dl-bar">
           <div className="dl-bar-inner">
-            <div className="dl-bar-icon">⬇</div>
+            <div className="dl-bar-icon">
+              {dlState.phase === 'done' ? '✅' : '⬇'}
+            </div>
             <div className="dl-bar-body">
               <div className="dl-bar-labels">
                 <span className="dl-bar-phase">
-                  {dlState.phase === 'fetching'
-                    ? `Fetching rows… ${dlState.fetched.toLocaleString('en-IN')}${(totalCount || 0) > 0 ? ' / ' + (totalCount).toLocaleString('en-IN') : ''}`
-                    : `Creating ZIP… ${Math.round(dlState.zipPct)}%`}
+                  {dlState.phase === 'preparing'   && '⏳ Preparing ZIP on server…'}
+                  {dlState.phase === 'downloading' && (
+                    dlState.pct > 0
+                      ? `⬇ Downloading… ${dlState.pct}%`
+                      : '⬇ Downloading…'
+                  )}
+                  {dlState.phase === 'saving'      && '💾 Saving file…'}
+                  {dlState.phase === 'done'        && '✅ Download complete!'}
                 </span>
                 <span className="dl-bar-hint">
-                  {dlState.phase === 'fetching' ? 'Please wait, do not close this tab' : 'Compressing your data'}
+                  {dlState.phase === 'preparing'   && 'Querying Fabric and building the ZIP — please wait'}
+                  {dlState.phase === 'downloading' && 'Do not close this tab'}
+                  {dlState.phase === 'saving'      && 'Check your browser downloads bar'}
+                  {dlState.phase === 'done'        && ''}
                 </span>
               </div>
               <div className="dl-progress-track">
                 <div
                   className="dl-progress-fill"
-                  style={{
-                    width: dlState.phase === 'fetching'
-                      ? (totalCount ? `${Math.min(100, (dlState.fetched / totalCount) * 100)}%` : '100%')
-                      : `${dlState.zipPct}%`,
-                    animation: (!totalCount && dlState.phase === 'fetching') ? 'dl-indeterminate 1.4s ease infinite' : 'none',
-                  }}
+                  style={
+                    dlState.phase === 'preparing' || (dlState.phase === 'downloading' && dlState.pct === 0)
+                      ? { width: '100%', animation: 'dl-indeterminate 1.4s ease infinite' }
+                      : { width: `${dlState.pct}%`, animation: 'none', transition: 'width 0.3s ease' }
+                  }
                 />
               </div>
             </div>

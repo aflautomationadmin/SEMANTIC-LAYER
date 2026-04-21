@@ -10,7 +10,10 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/cubejs-api': 'http://localhost:4000',
+      '/permissions-api': {
+        target: 'http://localhost:5001',
+        rewrite: (path) => path.replace(/^\/permissions-api/, ''),
+      },
     },
   },
 })
