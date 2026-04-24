@@ -48,20 +48,35 @@ export async function savePermissions(config) {
 
 /**
  * Returns:
- *   []        – admin, full access
- *   string[]  – restricted to these brands
- *   null      – no access
+ *   []        – admin or portal-access user (full gate-level access)
+ *   string[]  – legacy brand-restricted user
+ *   null      – no access at all
  */
 export async function getBrandAccess(email) {
   if (!email) return null
   const config = await loadPermissions()
   const e = email.toLowerCase()
 
+  // 1. Admin — full access
   if (config.admins.some(a => a.toLowerCase() === e)) return []
 
+  // 2. Legacy brand list
   const allowed = Object.entries(config.brands)
     .filter(([, users]) => users.some(u => u.toLowerCase() === e))
     .map(([brand]) => brand)
 
-  return allowed.length > 0 ? allowed : null
+  if (allowed.length > 0) return allowed
+
+  // 3. New portal_access — users added via the Admin → Users tab
+  //    If they have at least one portal, let them through.
+  //    Per-portal row restriction is handled inside the app, not here.
+  try {
+    const res = await fetch(`/permissions-api/my-portals?email=${encodeURIComponent(email)}`)
+    if (res.ok) {
+      const data = await res.json()
+      if ((data.portals || []).length > 0) return []
+    }
+  } catch {}
+
+  return null
 }
