@@ -334,46 +334,60 @@ function RestrictMultiSelect({ values, selected, onChange, loading = false }) {
 
 // ── Users Tab (portal-specific access) ───────────────────────────────────
 function UsersTab({ currentUser }) {
-  const [portals,      setPortals]      = useState([])
-  const [selId,        setSelId]        = useState('')
-  const [access,       setAccess]       = useState([])
-  const [loading,      setLoading]      = useState(false)
-  const [colVals,      setColVals]      = useState([])   // distinct values for restrict_col
+  const [portals,        setPortals]        = useState([])
+  const [selId,          setSelId]          = useState('')
+  const [access,         setAccess]         = useState([])
+  const [loading,        setLoading]        = useState(false)
+  const [colVals,        setColVals]        = useState([])
   const [colValsLoading, setColValsLoading] = useState(false)
-  const [editEmail,    setEditEmail]    = useState(null) // email being edited
-  const [editSel,      setEditSel]      = useState([])   // selected values in edit
-  const [newEmail,     setNewEmail]     = useState('')
-  const [newSel,       setNewSel]       = useState([])
-  const [err,          setErr]          = useState('')
-  const [saving,       setSaving]       = useState(false)
+  const [editEmail,      setEditEmail]      = useState(null)
+  const [editSel,        setEditSel]        = useState([])
+  const [newEmail,       setNewEmail]       = useState('')
+  const [newSel,         setNewSel]         = useState([])
+  const [err,            setErr]            = useState('')
+  const [saving,         setSaving]         = useState(false)
+
+  // AbortController refs — cancel stale Fabric queries when portal changes
+  const colValsAbortRef = useRef(null)
+  const accessAbortRef  = useRef(null)
 
   const selPortal   = portals.find(p => p.id === selId)
   const restrictCol = selPortal?.config?.restrict_col || null
 
-  // Standalone fetchers — take explicit id to avoid stale-closure bugs
   const fetchAccess = (id) => {
     if (!id) return
+    // Cancel previous in-flight request
+    if (accessAbortRef.current) accessAbortRef.current.abort()
+    const ctrl = new AbortController()
+    accessAbortRef.current = ctrl
+
     setLoading(true)
-    fetch(`/permissions-api/portals/${id}/access`)
+    fetch(`/permissions-api/portals/${id}/access`, { signal: ctrl.signal })
       .then(r => r.json())
       .then(d => setAccess(d.access || []))
-      .catch(() => setAccess([]))
-      .finally(() => setLoading(false))
+      .catch(e => { if (e.name !== 'AbortError') setAccess([]) })
+      .finally(() => { if (!ctrl.signal.aborted) setLoading(false) })
   }
 
   const fetchColVals = (id) => {
     if (!id) return
+    // Cancel previous in-flight Fabric query — this is the race condition fix.
+    // Without this, switching portals quickly leaves a stale POS Sales response
+    // arriving last and overwriting the correct portal's values.
+    if (colValsAbortRef.current) colValsAbortRef.current.abort()
+    const ctrl = new AbortController()
+    colValsAbortRef.current = ctrl
+
     setColVals([])
     setColValsLoading(true)
-    // Always hit the endpoint — backend returns [] when no restrict_col is set
-    fetch(`/permissions-api/portals/${id}/restrict-values`)
+    fetch(`/permissions-api/portals/${id}/restrict-values`, { signal: ctrl.signal })
       .then(r => r.json())
       .then(d => setColVals(d.values || []))
-      .catch(() => setColVals([]))
-      .finally(() => setColValsLoading(false))
+      .catch(e => { if (e.name !== 'AbortError') setColVals([]) })
+      .finally(() => { if (!ctrl.signal.aborted) setColValsLoading(false) })
   }
 
-  // Load portals once; immediately kick off data fetches for first portal
+  // Load portals once; kick off fetches for first portal
   useEffect(() => {
     fetch('/permissions-api/portals')
       .then(r => r.json())
@@ -382,14 +396,20 @@ function UsersTab({ currentUser }) {
         setPortals(ps)
         if (ps.length) {
           setSelId(ps[0].id)
+          // Also fetch immediately — selId effect won't fire for this first set
           fetchAccess(ps[0].id)
           fetchColVals(ps[0].id)
         }
       })
       .catch(() => {})
+    // Cleanup: abort any in-flight requests when component unmounts
+    return () => {
+      colValsAbortRef.current?.abort()
+      accessAbortRef.current?.abort()
+    }
   }, [])
 
-  // Re-fetch when user manually picks a different portal
+  // Re-fetch when user picks a different portal
   useEffect(() => {
     if (!selId) return
     setEditEmail(null); setNewEmail(''); setNewSel([]); setErr('')
