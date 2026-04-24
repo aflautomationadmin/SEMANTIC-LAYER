@@ -51,32 +51,21 @@ export async function savePermissions(config) {
  *   []        – admin or portal-access user (full gate-level access)
  *   string[]  – legacy brand-restricted user
  *   null      – no access at all
+ *
+ * All logic lives in the backend /check-access endpoint so this
+ * function is a thin wrapper with no duplicated rules.
  */
 export async function getBrandAccess(email) {
   if (!email) return null
-  const config = await loadPermissions()
-  const e = email.toLowerCase()
-
-  // 1. Admin — full access
-  if (config.admins.some(a => a.toLowerCase() === e)) return []
-
-  // 2. Legacy brand list
-  const allowed = Object.entries(config.brands)
-    .filter(([, users]) => users.some(u => u.toLowerCase() === e))
-    .map(([brand]) => brand)
-
-  if (allowed.length > 0) return allowed
-
-  // 3. New portal_access — users added via the Admin → Users tab
-  //    If they have at least one portal, let them through.
-  //    Per-portal row restriction is handled inside the app, not here.
   try {
-    const res = await fetch(`/permissions-api/my-portals?email=${encodeURIComponent(email)}`)
-    if (res.ok) {
-      const data = await res.json()
-      if ((data.portals || []).length > 0) return []
-    }
-  } catch {}
-
-  return null
+    const res  = await fetch(`/permissions-api/check-access?email=${encodeURIComponent(email)}`)
+    const data = await res.json()
+    if (!data.allowed) return null
+    // Legacy brand list preserved for any downstream brand-filter logic
+    return (data.brands && data.brands.length > 0) ? data.brands : []
+  } catch {
+    // Network failure — fail open only if there's a cached config saying they're admin
+    // Otherwise deny to be safe
+    return null
+  }
 }

@@ -391,6 +391,53 @@ def get_permissions():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/check-access', methods=['GET'])
+def check_access():
+    """
+    Single endpoint the frontend calls at login to decide if a user is allowed in.
+    Checks all three sources in order:
+      1. app_permissions.admins  → allowed, is_admin=True
+      2. app_permissions.brands  → allowed, brands=[...] (legacy)
+      3. portal_access (any active portal) → allowed, is_admin=False
+    Returns { allowed: bool, is_admin: bool, brands: [...] }
+    """
+    try:
+        email = request.args.get('email', '').strip().lower()
+        if not email:
+            return jsonify({"allowed": False}), 400
+
+        with _db_lock:
+            con = get_con()
+
+            # Load legacy app_permissions config
+            row = con.execute("SELECT config FROM app_permissions WHERE id=1").fetchone()
+            cfg = json.loads(row[0]) if row else DEFAULT_CONFIG
+
+            # 1. Admin check
+            if any(a.lower() == email for a in cfg.get('admins', [])):
+                return jsonify({"allowed": True, "is_admin": True, "brands": []})
+
+            # 2. Legacy brand check
+            brands = [b for b, users in cfg.get('brands', {}).items()
+                      if any(u.lower() == email for u in users)]
+            if brands:
+                return jsonify({"allowed": True, "is_admin": False, "brands": brands})
+
+            # 3. Portal access check
+            hit = con.execute("""
+                SELECT 1 FROM portal_access pa
+                JOIN portals p ON p.id = pa.portal_id
+                WHERE p.is_active=TRUE AND LOWER(pa.email)=?
+                LIMIT 1
+            """, [email]).fetchone()
+            if hit:
+                return jsonify({"allowed": True, "is_admin": False, "brands": []})
+
+        return jsonify({"allowed": False})
+    except Exception as e:
+        return jsonify({"error": str(e), "allowed": False}), 500
+
+
 @app.route('/permissions', methods=['POST'])
 def save_permissions():
     try:
