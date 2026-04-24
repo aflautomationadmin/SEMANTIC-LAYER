@@ -3,6 +3,7 @@ import { useMsal, useIsAuthenticated } from '@azure/msal-react'
 import { loginRequest, msalInstance } from './authConfig'
 import { getBrandAccess } from './brandPermissions'
 import { logEvent } from './logger'
+import PortalHome from './PortalHome'
 import arvindLogo from './assets/arvind-logo.png'
 import './AuthWrapper.css'
 
@@ -100,8 +101,10 @@ function AccessDenied({ email }) {
 export default function AuthWrapper({ children }) {
   const { accounts } = useMsal()
   const isAuthenticated = useIsAuthenticated()
-  const [signing, setSigning]   = useState(false)
-  const [rbac, setRbac]         = useState(undefined) // undefined=loading
+  const [signing, setSigning]       = useState(false)
+  const [rbac, setRbac]             = useState(undefined) // undefined=loading
+  const [activePortal, setActivePortal] = useState(null)
+  const [showAdmin, setShowAdmin]   = useState(false)
 
   useEffect(() => {
     if (!isAuthenticated || !accounts.length) {
@@ -134,12 +137,29 @@ export default function AuthWrapper({ children }) {
     )
   }
 
-  // Still resolving RBAC (instantaneous in practice)
   if (rbac === undefined) return null
 
   if (rbac.brands === null) {
     return <AccessDenied email={rbac.email} />
   }
 
-  return children({ user: rbac, allowedBrands: rbac.brands })
+  // Show portal home if no portal selected
+  if (!activePortal && !showAdmin) {
+    return (
+      <PortalHome
+        user={rbac}
+        onSelect={portal => { setActivePortal(portal); setShowAdmin(false) }}
+        onAdmin={() => { setShowAdmin(true); setActivePortal(null) }}
+      />
+    )
+  }
+
+  // Pass selected portal + back handler to children
+  return children({
+    user:         rbac,
+    allowedBrands: rbac.brands,          // legacy compat (admin check)
+    portal:       activePortal,
+    showAdmin,
+    onBack:       () => { setActivePortal(null); setShowAdmin(false) },
+  })
 }

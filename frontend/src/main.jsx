@@ -14,8 +14,14 @@ createRoot(document.getElementById('root')).render(
   <StrictMode>
     <MsalProvider instance={msalInstance}>
       <AuthWrapper>
-        {({ user, allowedBrands }) => (
-          <App user={user} allowedBrands={allowedBrands} />
+        {({ user, allowedBrands, portal, showAdmin, onBack }) => (
+          <App
+            user={user}
+            allowedBrands={allowedBrands}
+            portal={portal}
+            showAdmin={showAdmin}
+            onBack={onBack}
+          />
         )}
       </AuthWrapper>
     </MsalProvider>
