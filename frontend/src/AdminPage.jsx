@@ -333,17 +333,65 @@ function RestrictMultiSelect({ values, selected, onChange, loading = false }) {
 }
 
 // ── Users Tab (portal-specific access) ───────────────────────────────────
+function getRestrictCols(portal) {
+  const cfg = portal?.config || {}
+  return (cfg.restrict_cols && cfg.restrict_cols.length)
+    ? cfg.restrict_cols.map(c => String(c).toUpperCase())
+    : (cfg.restrict_col ? [String(cfg.restrict_col).toUpperCase()] : [])
+}
+
+function normalizeRestrictSelection(selection, cols) {
+  if (!cols.length) return {}
+  if (Array.isArray(selection)) return selection.length ? { [cols[0]]: selection } : {}
+  return Object.fromEntries(
+    Object.entries(selection || {})
+      .filter(([k, v]) => cols.includes(String(k).toUpperCase()) && Array.isArray(v))
+      .map(([k, v]) => [String(k).toUpperCase(), v])
+  )
+}
+
+function RestrictColumnSelectors({ cols, valuesByColumn, selected, onChange, loading }) {
+  const selection = normalizeRestrictSelection(selected, cols)
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {cols.map(col => (
+        <div key={col}>
+          <label className="field-label" style={{ marginBottom: 4 }}>
+            {col} <span style={{fontWeight:400,color:'#888'}}>(empty = all)</span>
+          </label>
+          <RestrictMultiSelect
+            values={valuesByColumn[col] || []}
+            loading={loading}
+            selected={selection[col] || []}
+            onChange={vals => onChange({ ...selection, [col]: vals })}
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function RestrictValuePills({ cols, values }) {
+  const selection = normalizeRestrictSelection(values, cols)
+  const entries = Object.entries(selection).filter(([, vals]) => vals.length > 0)
+  if (!cols.length) return <span className="brand-pill all-pill">Full access</span>
+  if (!entries.length) return <span className="brand-pill all-pill">All rows</span>
+  return entries.flatMap(([col, vals]) =>
+    vals.map(v => <span key={`${col}:${v}`} className="brand-pill">{col}: {v}</span>)
+  )
+}
+
 function UsersTab({ currentUser }) {
   const [portals,        setPortals]        = useState([])
   const [selId,          setSelId]          = useState('')
   const [access,         setAccess]         = useState([])
   const [loading,        setLoading]        = useState(false)
-  const [colVals,        setColVals]        = useState([])
+  const [colVals,        setColVals]        = useState({})
   const [colValsLoading, setColValsLoading] = useState(false)
   const [editEmail,      setEditEmail]      = useState(null)
-  const [editSel,        setEditSel]        = useState([])
+  const [editSel,        setEditSel]        = useState({})
   const [newEmail,       setNewEmail]       = useState('')
-  const [newSel,         setNewSel]         = useState([])
+  const [newSel,         setNewSel]         = useState({})
   const [err,            setErr]            = useState('')
   const [saving,         setSaving]         = useState(false)
 
@@ -352,7 +400,8 @@ function UsersTab({ currentUser }) {
   const accessAbortRef  = useRef(null)
 
   const selPortal   = portals.find(p => p.id === selId)
-  const restrictCol = selPortal?.config?.restrict_col || null
+  const restrictCols = getRestrictCols(selPortal)
+  const restrictLabel = restrictCols.join(', ')
 
   const fetchAccess = (id) => {
     if (!id) return
@@ -378,12 +427,12 @@ function UsersTab({ currentUser }) {
     const ctrl = new AbortController()
     colValsAbortRef.current = ctrl
 
-    setColVals([])
+    setColVals({})
     setColValsLoading(true)
     fetch(`/permissions-api/portals/${id}/restrict-values`, { signal: ctrl.signal })
       .then(r => r.json())
-      .then(d => setColVals(d.values || []))
-      .catch(e => { if (e.name !== 'AbortError') setColVals([]) })
+      .then(d => setColVals(d.values_by_column || (d.column ? { [d.column]: d.values || [] } : {})))
+      .catch(e => { if (e.name !== 'AbortError') setColVals({}) })
       .finally(() => { if (!ctrl.signal.aborted) setColValsLoading(false) })
   }
 
@@ -412,7 +461,7 @@ function UsersTab({ currentUser }) {
   // Re-fetch when user picks a different portal
   useEffect(() => {
     if (!selId) return
-    setEditEmail(null); setNewEmail(''); setNewSel([]); setErr('')
+    setEditEmail(null); setNewEmail(''); setNewSel({}); setErr('')
     fetchAccess(selId)
     fetchColVals(selId)
   }, [selId])
@@ -437,7 +486,7 @@ function UsersTab({ currentUser }) {
     setSaving(true)
     try {
       for (const email of emails) await saveAccess(email, newSel)
-      setNewEmail(''); setNewSel([]); setErr('')
+      setNewEmail(''); setNewSel({}); setErr('')
       fetchAccess(selId)
     } finally { setSaving(false) }
   }
@@ -466,8 +515,8 @@ function UsersTab({ currentUser }) {
             {portals.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           {selPortal && <span className="portal-view-badge">{selPortal.view_name}</span>}
-          {restrictCol
-            ? <span className="restrict-col-pill">🔒 Restrict by: <strong>{restrictCol}</strong>
+          {restrictCols.length > 0
+            ? <span className="restrict-col-pill">🔒 Restrict by: <strong>{restrictLabel}</strong>
                 {colValsLoading && <span style={{marginLeft:6,opacity:.6}}>loading values…</span>}
               </span>
             : selPortal && <span className="no-restrict-pill">No column restriction</span>
@@ -485,7 +534,7 @@ function UsersTab({ currentUser }) {
               <thead>
                 <tr>
                   <th>Email</th>
-                  <th>{restrictCol ? `${restrictCol} Access` : 'Access'}</th>
+                  <th>{restrictCols.length ? `${restrictLabel} Access` : 'Access'}</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -503,11 +552,12 @@ function UsersTab({ currentUser }) {
                       </td>
 
                       <td style={{minWidth: 260}}>
-                        {isEditing && restrictCol ? (
+                        {isEditing && restrictCols.length > 0 ? (
                           <div style={{display:'flex', gap:6, alignItems:'center'}}>
                             <div style={{flex:1}}>
-                              <RestrictMultiSelect
-                                values={colVals}
+                              <RestrictColumnSelectors
+                                cols={restrictCols}
+                                valuesByColumn={colVals}
                                 loading={colValsLoading}
                                 selected={editSel}
                                 onChange={setEditSel}
@@ -522,21 +572,16 @@ function UsersTab({ currentUser }) {
                           </div>
                         ) : (
                           <div className="restrict-vals-wrap">
-                            {!restrictCol
-                              ? <span className="brand-pill all-pill">Full access</span>
-                              : (a.restrict_values || []).length
-                                ? (a.restrict_values || []).map(v => <span key={v} className="brand-pill">{v}</span>)
-                                : <span className="brand-pill all-pill">All rows</span>
-                            }
+                            <RestrictValuePills cols={restrictCols} values={a.restrict_values} />
                           </div>
                         )}
                       </td>
 
                       <td className="cell-actions">
-                        {restrictCol && !isEditing && (
+                        {restrictCols.length > 0 && !isEditing && (
                           <button className="btn-edit" onClick={() => {
                             setEditEmail(a.email)
-                            setEditSel(a.restrict_values || [])
+                            setEditSel(normalizeRestrictSelection(a.restrict_values, restrictCols))
                           }}>Edit</button>
                         )}
                         {!isMe && (
@@ -569,18 +614,14 @@ function UsersTab({ currentUser }) {
               />
             </div>
 
-            {restrictCol && (
+            {restrictCols.length > 0 && (
               <div className="add-field" style={{flex:2}}>
-                <label className="field-label">
-                  {restrictCol}{' '}
-                  <span style={{fontWeight:400,color:'#888'}}>(leave empty = all rows)</span>
-                </label>
-                <RestrictMultiSelect
-                  values={colVals}
+                <RestrictColumnSelectors
+                  cols={restrictCols}
+                  valuesByColumn={colVals}
                   loading={colValsLoading}
                   selected={newSel}
                   onChange={setNewSel}
-                  placeholder="All rows (no restriction)"
                 />
               </div>
             )}
@@ -756,19 +797,22 @@ function Step1Info({ draft, setDraft, onDiscover, discovering, discoverError }) 
         }
       </div>
       <div className="wiz-field">
-        <label className="field-label">Restrict Column <span className="field-hint">(optional — column used for row-level restriction)</span></label>
+        <label className="field-label">Restrict Columns <span className="field-hint">(optional - columns used for row-level restriction)</span></label>
         {draft.columns.length > 0
           ? (
-            <select className="log-select" value={draft.restrict_col}
-              onChange={e => setDraft(d => ({ ...d, restrict_col: e.target.value }))}>
-              <option value="">— none —</option>
-              {draft.columns.map(c => <option key={c.key} value={c.key}>{c.key}</option>)}
-            </select>
+            <RestrictMultiSelect
+              values={draft.columns.map(c => c.key)}
+              selected={draft.restrict_cols}
+              onChange={vals => setDraft(d => ({ ...d, restrict_cols: vals }))}
+            />
           )
           : (
-            <input className="field-input" placeholder="e.g. BRAND (leave blank if not needed)"
-              value={draft.restrict_col}
-              onChange={e => setDraft(d => ({ ...d, restrict_col: e.target.value }))} />
+            <input className="field-input" placeholder="e.g. BRAND, REGION (leave blank if not needed)"
+              value={draft.restrict_cols.join(', ')}
+              onChange={e => setDraft(d => ({
+                ...d,
+                restrict_cols: e.target.value.split(',').map(v => v.trim()).filter(Boolean),
+              }))} />
           )
         }
       </div>
@@ -797,56 +841,97 @@ function Step2Columns({ draft, setDraft }) {
           <button className="btn-edit" onClick={() => toggleAll('show', false)}>Hide All</button>
         </div>
       </div>
-      <div className="col-table-wrap">
-        <table className="col-table">
-          <thead>
-            <tr>
-              <th>Column Key</th>
-              <th>Label</th>
-              <th>Show</th>
-              <th>Filter Type</th>
-              <th>Group</th>
-              <th>Currency</th>
-            </tr>
-          </thead>
-          <tbody>
-            {draft.columns.map((col, idx) => (
-              <tr key={col.key} className={[
-                !col.show ? 'col-hidden' : '',
-                col.filter && col.filter !== 'none' ? 'col-filtered' : ''
-              ].join(' ').trim()}>
-                <td className="col-key">{col.key}</td>
-                <td>
-                  <input className="col-label-input"
-                    value={col.label}
-                    onChange={e => updateCol(idx, { label: e.target.value })} />
-                </td>
-                <td className="col-center">
-                  <input type="checkbox" checked={col.show}
-                    onChange={e => updateCol(idx, { show: e.target.checked })} />
-                </td>
-                <td>
+      <div className="col-list">
+        {draft.columns.map((col, idx) => {
+          const aggregate = col.aggregate || (col.is_numeric || col.currency ? 'sum' : 'group')
+          return (
+            <div key={col.key} className={[
+              'col-row',
+              !col.show ? 'col-row-hidden' : '',
+              col.filter && col.filter !== 'none' ? 'col-row-filtered' : ''
+            ].join(' ').trim()}>
+              <label className="col-show-toggle" title="Show column">
+                <input type="checkbox" checked={col.show}
+                  onChange={e => updateCol(idx, { show: e.target.checked })} />
+              </label>
+
+              <div className="col-main">
+                <div className="col-key">{col.key}</div>
+                <input className="col-label-input"
+                  value={col.label}
+                  onChange={e => updateCol(idx, { label: e.target.value })} />
+              </div>
+
+              <div className="col-controls">
+                <label className="col-control">
+                  <span>Filter</span>
                   <select className={`col-select ${col.filter && col.filter !== 'none' ? 'col-select-active' : ''}`}
                     value={col.filter || 'none'}
                     onChange={e => updateCol(idx, { filter: e.target.value })}>
                     {FILTER_TYPE_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
                   </select>
-                </td>
-                <td>
+                </label>
+                <label className="col-control">
+                  <span>Summary</span>
+                  <select className="col-select"
+                    value={aggregate}
+                    onChange={e => updateCol(idx, { aggregate: e.target.value })}>
+                    <option value="group">Group by</option>
+                    <option value="sum">Sum</option>
+                    <option value="avg">Avg</option>
+                    <option value="median">Median</option>
+                    <option value="mode">Mode</option>
+                  </select>
+                </label>
+                <label className="col-control">
+                  <span>Group</span>
                   <select className="col-select"
                     value={col.group || 'Other'}
                     onChange={e => updateCol(idx, { group: e.target.value })}>
                     {GROUP_OPTIONS.map(g => <option key={g} value={g}>{g}</option>)}
                   </select>
-                </td>
-                <td className="col-center">
+                </label>
+                <label className="col-currency-toggle">
                   <input type="checkbox" checked={!!col.currency}
-                    onChange={e => updateCol(idx, { currency: e.target.checked })} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                    onChange={e => updateCol(idx, { currency: e.target.checked, aggregate: e.target.checked ? 'sum' : col.aggregate })} />
+                  <span>Currency</span>
+                </label>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="filter-summary">
+        <div className="filter-summary-header">
+          <span className="filter-summary-title">Final Data Summary</span>
+          <span className="filter-summary-hint">Visible dimensions are grouped; visible measures are summed</span>
+        </div>
+        {(() => {
+          const shown = draft.columns.filter(c => c.show)
+          const summaryMode = c => c.aggregate || (c.is_numeric || c.currency ? 'sum' : 'group')
+          const dims = shown.filter(c => summaryMode(c) === 'group')
+          const measures = shown.filter(c => summaryMode(c) !== 'group')
+          return (
+            <div className="filter-cards">
+              {dims.map(c => (
+                <div key={`g-${c.key}`} className="filter-card">
+                  <span className="filter-card-label">{c.label || c.key}</span>
+                  <span className="filter-card-key">{c.key}</span>
+                  <span className="filter-card-type type-dropdown">group by</span>
+                </div>
+              ))}
+              {measures.map(c => (
+                <div key={`s-${c.key}`} className="filter-card">
+                  <span className="filter-card-label">{c.label || c.key}</span>
+                  <span className="filter-card-key">{c.key}</span>
+                  <span className="filter-card-type type-text">{summaryMode(c)}</span>
+                </div>
+              ))}
+              {shown.length === 0 && <div className="filter-summary-empty">No visible columns selected.</div>}
+            </div>
+          )
+        })()}
       </div>
 
       {/* ── Configured Filters summary ── */}
@@ -904,7 +989,7 @@ function PortalWizard({ editing, onClose, onSaved }) {
     description:  '',
     view_name:    '',
     date_col:     '',
-    restrict_col: '',
+    restrict_cols: [],
     columns:      [],
   }
 
@@ -917,7 +1002,9 @@ function PortalWizard({ editing, onClose, onSaved }) {
       description:  editing.description || '',
       view_name:    editing.view_name,
       date_col:     cfg.date_col || '',
-      restrict_col: cfg.restrict_col || '',
+      restrict_cols: (cfg.restrict_cols && cfg.restrict_cols.length)
+        ? cfg.restrict_cols
+        : (cfg.restrict_col ? [cfg.restrict_col] : []),
       columns:      cfg.columns || [],
     }
   })
@@ -962,7 +1049,9 @@ function PortalWizard({ editing, onClose, onSaved }) {
       columns:      draft.columns,
       groups,
       date_col:     draft.date_col,
-      restrict_col: draft.restrict_col || null,
+      restrict_col: draft.restrict_cols[0] || null,
+      restrict_cols: draft.restrict_cols,
+      summarize:    true,
     }
   }
 
@@ -1148,8 +1237,8 @@ function PortalsTab() {
                       <span className="portal-view-badge">{p.view_name}</span>
                     </td>
                     <td>
-                      {p.restrict_col
-                        ? <span className="brand-pill">{p.restrict_col}</span>
+                      {(p.restrict_cols && p.restrict_cols.length) || p.restrict_col
+                        ? <span className="brand-pill">{(p.restrict_cols || [p.restrict_col]).filter(Boolean).join(', ')}</span>
                         : <span style={{ color: '#aaa', fontSize: 12 }}>—</span>}
                     </td>
                     <td>

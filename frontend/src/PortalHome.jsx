@@ -9,6 +9,16 @@ export default function PortalHome({ user, onSelect, onAdmin }) {
   const [error, setError]       = useState(null)
   const isAdmin = user.brands && user.brands.length === 0
 
+  const restrictionText = portal => {
+    const vals = portal.restrict_values
+    if (!vals) return ''
+    if (Array.isArray(vals)) return vals.join(' · ')
+    return Object.entries(vals)
+      .filter(([, v]) => Array.isArray(v) && v.length > 0)
+      .map(([k, v]) => `${k}: ${v.join(' / ')}`)
+      .join(' · ')
+  }
+
   useEffect(() => {
     fetch(`/permissions-api/my-portals?email=${encodeURIComponent(user.email)}`)
       .then(r => r.json())
@@ -79,9 +89,9 @@ export default function PortalHome({ user, onSelect, onAdmin }) {
                   )}
                   <div className="ph-card-meta">
                     <span className="ph-card-view">{portal.view_name}</span>
-                    {portal.restrict_values && portal.restrict_values.length > 0 && (
+                    {restrictionText(portal) && (
                       <span className="ph-card-restrict">
-                        🔒 {portal.restrict_values.join(' · ')}
+                        🔒 {restrictionText(portal)}
                       </span>
                     )}
                   </div>

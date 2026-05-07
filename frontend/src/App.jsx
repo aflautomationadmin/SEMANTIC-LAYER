@@ -40,7 +40,11 @@ function buildExportUrl(portalId, fromDate, toDate, restrictValues, filterValues
   params.set('portal_id', portalId)
   params.set('from_date',  fromDate)
   params.set('to_date',    toDate)
-  restrictValues.forEach(v => params.append('restrict_value', v))
+  if (restrictValues && !Array.isArray(restrictValues) && typeof restrictValues === 'object') {
+    params.set('restrict_values', JSON.stringify(restrictValues))
+  } else {
+    ;(restrictValues || []).forEach(v => params.append('restrict_value', v))
+  }
 
   filterConfig.forEach(({ key, type }) => {
     const val = filterValues[key]
@@ -76,7 +80,11 @@ function MultiDropdown({ portalId, column, fromDate, toDate, restrictValues, sel
     if (!open || fetched) return
     setLoading(true)
     const params = new URLSearchParams({ portal_id: portalId, column, from_date: fromDate, to_date: toDate })
-    restrictValues.forEach(v => params.append('restrict_value', v))
+    if (restrictValues && !Array.isArray(restrictValues) && typeof restrictValues === 'object') {
+      params.set('restrict_values', JSON.stringify(restrictValues))
+    } else {
+      ;(restrictValues || []).forEach(v => params.append('restrict_value', v))
+    }
     fetch(`/permissions-api/data/values?${params}`)
       .then(r => r.json())
       .then(data => { setOptions(data.values || []); setHasBlank(!!data.has_blank); setFetched(true) })
@@ -166,10 +174,19 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
   const FILTER_CONFIG = config.filters  || []
   const TABLE_COLUMNS = (config.columns || []).filter(c => c.show)
   const CURRENCY_COLS = new Set((config.columns || []).filter(c => c.currency).map(c => c.key))
+  const NUMERIC_COLS  = new Set((config.columns || []).filter(c => c.currency || c.is_numeric || (c.aggregate && c.aggregate !== 'group')).map(c => c.key))
   const GROUPS        = config.groups   || [...new Set(FILTER_CONFIG.map(f => f.group))]
   const dateCol       = (config.date_col  || 'INVOICE_DATE').toUpperCase()
-  const restrictCol   = config.restrict_col || null
-  const restrictValues = portal.restrict_values || []   // user's allowed values
+  const restrictCols  = (config.restrict_cols && config.restrict_cols.length)
+    ? config.restrict_cols.map(c => String(c).toUpperCase())
+    : (config.restrict_col ? [String(config.restrict_col).toUpperCase()] : [])
+  const restrictValues = portal.restrict_values || []   // legacy array, or { COLUMN: [] }
+  const restrictMap = Array.isArray(restrictValues)
+    ? (restrictCols[0] && restrictValues.length ? { [restrictCols[0]]: restrictValues } : {})
+    : (restrictValues || {})
+  const restrictionLabels = Object.entries(restrictMap)
+    .filter(([, vals]) => Array.isArray(vals) && vals.length > 0)
+    .map(([col, vals]) => `${col}: ${vals.join(' / ')}`)
 
   const today        = new Date().toISOString().slice(0, 10)
   const firstOfMonth = today.slice(0, 8) + '01'
@@ -296,7 +313,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
 
   const sortedRows = sortCol ? [...rows].sort((a, b) => {
     const av = a[sortCol] ?? '', bv = b[sortCol] ?? ''
-    const isNum = CURRENCY_COLS.has(sortCol)
+    const isNum = NUMERIC_COLS.has(sortCol)
     const cmp = isNum ? Number(av) - Number(bv) : String(av).localeCompare(String(bv))
     return sortDir === 'asc' ? cmp : -cmp
   }) : rows
@@ -321,9 +338,9 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         </button>
         <div className="header-sub">{portal.name}</div>
         <div className="header-user">
-          {restrictValues.length > 0 && (
+          {restrictionLabels.length > 0 && (
             <span className="header-brand-badge">
-              🔒 {restrictValues.join(' · ')}
+              {restrictionLabels.join(' · ')}
             </span>
           )}
           <span className="header-name">{user.displayName}</span>
@@ -395,9 +412,9 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
                 <div key={key} className="f-cell">
                   <label className="f-label">{label}</label>
                   {/* Row-restrict col is locked for restricted users */}
-                  {key === restrictCol && restrictValues.length > 0 ? (
+                  {restrictCols.includes(String(key).toUpperCase()) && restrictMap[String(key).toUpperCase()]?.length > 0 ? (
                     <div className="brand-chips-locked">
-                      {restrictValues.map(b => <span key={b} className="brand-chip">🔒 {b}</span>)}
+                      {restrictMap[String(key).toUpperCase()].map(b => <span key={b} className="brand-chip">{b}</span>)}
                     </div>
                   ) : type === 'dropdown' ? (
                     <MultiDropdown

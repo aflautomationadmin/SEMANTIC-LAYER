@@ -95,29 +95,201 @@ def _portal_allowed_cols(config: dict) -> set:
     cols = {c['key'].upper() for c in config.get('columns', [])}
     for f in config.get('filters', []):
         cols.add(f['key'].upper())
+    for c in _portal_restrict_cols(config):
+        cols.add(c)
     return cols
 
 
-def _portal_data_cols(config: dict) -> list:
-    """Build the SELECT column list for a portal. Casts date_col to DATE."""
+def _portal_visible_cols(config: dict) -> list:
+    """Columns selected for the final portal output."""
+    return [c for c in config.get('columns', []) if c.get('show')]
+
+
+def _portal_restrict_cols(config: dict) -> list:
+    """Return configured row-restriction columns, preserving legacy restrict_col."""
+    cols = config.get('restrict_cols')
+    if not cols and config.get('restrict_col'):
+        cols = [config.get('restrict_col')]
+    return [str(c).strip().upper() for c in (cols or []) if str(c).strip()]
+
+
+def _normalize_restrictions(config: dict, restrict_values) -> dict:
+    """Normalize legacy list restrictions and new {column: values[]} restrictions."""
+    restrict_cols = _portal_restrict_cols(config)
+    if isinstance(restrict_values, dict):
+        return {
+            str(k).strip().upper(): [v for v in (vals or []) if str(v).strip()]
+            for k, vals in restrict_values.items()
+            if str(k).strip().upper() in restrict_cols
+        }
+    if restrict_cols and isinstance(restrict_values, list):
+        vals = [v for v in restrict_values if str(v).strip()]
+        return {restrict_cols[0]: vals} if vals else {}
+    return {}
+
+
+def _is_measure_col(col: dict) -> bool:
+    """Measures are summarized; dimensions are grouped."""
+    agg = (col.get('aggregate') or '').lower()
+    return bool(agg in ('sum', 'avg', 'median', 'mode') or col.get('currency') or col.get('is_numeric'))
+
+
+def _aggregate_for_col(col: dict) -> str:
+    agg = (col.get('aggregate') or '').lower()
+    if agg in ('sum', 'avg', 'median', 'mode'):
+        return agg
+    return 'sum' if col.get('currency') or col.get('is_numeric') else 'group'
+
+
+def _col_expr(key: str, date_col: str) -> str:
+    key = key.upper()
+    return f'CAST({key} AS DATE)' if key == date_col.upper() else key
+
+
+def _portal_query_parts(config: dict):
+    """Build grouped SELECT metadata from the visible portal columns."""
     date_col = config.get('date_col', 'INVOICE_DATE').upper()
-    result = []
-    for c in config.get('columns', []):
+    dimensions, dimension_keys, measures, select_parts, headers, output = [], [], [], [], [], []
+
+    for c in _portal_visible_cols(config):
         key = c['key'].upper()
-        if key == date_col:
-            result.append(f'CAST({key} AS DATE) AS {key}')
+        label = c.get('label') or key
+        headers.append(label)
+        if _is_measure_col(c):
+            agg = _aggregate_for_col(c)
+            measures.append({"key": key, "aggregate": agg})
+            output.append({"type": "measure", "key": key, "aggregate": agg})
+            if agg == 'avg':
+                select_parts.append(f'AVG(TRY_CAST({key} AS FLOAT)) AS {key}')
+            elif agg in ('median', 'mode'):
+                select_parts.append(key)
+            else:
+                select_parts.append(f'SUM(TRY_CAST({key} AS FLOAT)) AS {key}')
         else:
-            result.append(key)
-    return result
+            expr = _col_expr(key, date_col)
+            dimensions.append(expr)
+            dimension_keys.append(key)
+            output.append({"type": "dimension", "key": key})
+            select_parts.append(f'{expr} AS {key}')
+
+    return {
+        "select": select_parts,
+        "dimensions": dimensions,
+        "dimension_keys": dimension_keys,
+        "measures": measures,
+        "output": output,
+        "headers": headers,
+    }
+
+
+def _join_on_dims(left_alias: str, right_alias: str, dim_keys: list) -> str:
+    if not dim_keys:
+        return "1=1"
+    return " AND ".join(f"{left_alias}.{k} = {right_alias}.{k}" for k in dim_keys)
+
+
+def _portal_select_sql(config: dict, view_name: str, where: str, limit=None, order=True) -> str:
+    """Build summarized SELECT SQL for preview/export."""
+    parts = _portal_query_parts(config)
+    dim_exprs = parts["dimensions"]
+    dim_keys = parts["dimension_keys"]
+    measures = parts["measures"]
+    top = f"TOP {limit} " if limit else ""
+
+    if not parts["select"]:
+        raise ValueError("No visible columns configured")
+
+    # Dimension-only portals return distinct dimension rows.
+    if dim_exprs and not measures:
+        cols_sql = ', '.join(parts["select"])
+        order_sql = f" ORDER BY {dim_exprs[0]}" if order else ""
+        return f"SELECT DISTINCT {top}{cols_sql} FROM {view_name} WHERE {where}{order_sql}"
+
+    # Simple aggregate path for SUM/AVG only.
+    simple_aggs = {'sum': 'SUM', 'avg': 'AVG'}
+    if measures and all(m["aggregate"] in simple_aggs for m in measures):
+        select_dims = [f"{expr} AS {key}" for expr, key in zip(dim_exprs, dim_keys)]
+        select_measures = [
+            f"{simple_aggs[m['aggregate']]}(TRY_CAST({m['key']} AS FLOAT)) AS {m['key']}"
+            for m in measures
+        ]
+        cols_sql = ', '.join(select_dims + select_measures)
+        group_by = f" GROUP BY {', '.join(dim_exprs)}" if dim_exprs else ""
+        order_col = dim_exprs[0] if dim_exprs else "1"
+        order_sql = f" ORDER BY {order_col}" if order else ""
+        return f"SELECT {top}{cols_sql} FROM {view_name} WHERE {where}{group_by}{order_sql}"
+
+    # Window/CTE path for MEDIAN and MODE.
+    base_cols = [f"{expr} AS {key}" for expr, key in zip(dim_exprs, dim_keys)]
+    base_cols += [f"TRY_CAST({m['key']} AS FLOAT) AS {m['key']}" for m in measures]
+    ctes = [f"base AS (SELECT {', '.join(base_cols)} FROM {view_name} WHERE {where})"]
+    if dim_keys:
+        ctes.append(f"groups AS (SELECT {', '.join(dim_keys)} FROM base GROUP BY {', '.join(dim_keys)})")
+    else:
+        ctes.append("groups AS (SELECT 1 AS __ONE)")
+
+    joins = []
+    grouped_aggs = [m for m in measures if m["aggregate"] in ('sum', 'avg')]
+    if grouped_aggs:
+        agg_select = [f"{m['aggregate'].upper()}({m['key']}) AS {m['key']}" for m in grouped_aggs]
+        group_by = f" GROUP BY {', '.join(dim_keys)}" if dim_keys else ""
+        prefix = f"{', '.join(dim_keys)}, " if dim_keys else ""
+        ctes.append(f"agg AS (SELECT {prefix}{', '.join(agg_select)} FROM base{group_by})")
+        joins.append(f"LEFT JOIN agg a ON {_join_on_dims('g', 'a', dim_keys)}")
+    final_select_by_key = {k: f"g.{k}" for k in dim_keys}
+    final_select_by_key.update({m["key"]: f"a.{m['key']}" for m in grouped_aggs})
+
+    for m in measures:
+        key = m["key"]
+        if m["aggregate"] == "median":
+            partition = f"PARTITION BY {', '.join(dim_keys)}" if dim_keys else ""
+            prefix = f"{', '.join(dim_keys)}, " if dim_keys else ""
+            ctes.append(
+                f"med_{key} AS (SELECT DISTINCT {prefix}"
+                f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {key}) OVER ({partition}) AS {key} "
+                f"FROM base WHERE {key} IS NOT NULL)"
+            )
+            joins.append(f"LEFT JOIN med_{key} med_{key} ON {_join_on_dims('g', f'med_{key}', dim_keys)}")
+            final_select_by_key[key] = f"med_{key}.{key}"
+        elif m["aggregate"] == "mode":
+            prefix = f"{', '.join(dim_keys)}, " if dim_keys else ""
+            group_by = f"{', '.join(dim_keys)}, {key}" if dim_keys else key
+            partition = f"PARTITION BY {', '.join(dim_keys)} " if dim_keys else ""
+            ctes.append(
+                f"mode_count_{key} AS (SELECT {prefix}{key}, COUNT(*) AS cnt "
+                f"FROM base WHERE {key} IS NOT NULL GROUP BY {group_by})"
+            )
+            ctes.append(
+                f"mode_{key} AS (SELECT {prefix}{key} FROM (SELECT {prefix}{key}, "
+                f"ROW_NUMBER() OVER ({partition}ORDER BY cnt DESC, {key}) AS rn "
+                f"FROM mode_count_{key}) q WHERE rn=1)"
+            )
+            joins.append(f"LEFT JOIN mode_{key} mode_{key} ON {_join_on_dims('g', f'mode_{key}', dim_keys)}")
+            final_select_by_key[key] = f"mode_{key}.{key}"
+
+    order_col = f"g.{dim_keys[0]}" if dim_keys else "1"
+    order_sql = f" ORDER BY {order_col}" if order else ""
+    final_select = [final_select_by_key[c["key"]] for c in parts["output"]]
+    return f"WITH {', '.join(ctes)} SELECT {top}{', '.join(final_select)} FROM groups g {' '.join(joins)}{order_sql}"
+
+
+def _portal_count_sql(config: dict, view_name: str, where: str) -> str:
+    parts = _portal_query_parts(config)
+    if parts["dimensions"]:
+        group_sql = ', '.join(parts["dimensions"])
+        return f"SELECT COUNT(*) FROM (SELECT {group_sql} FROM {view_name} WHERE {where} GROUP BY {group_sql}) q"
+    if parts["measures"]:
+        return "SELECT 1"
+    return f"SELECT COUNT(*) FROM {view_name} WHERE {where}"
 
 
 def _portal_export_headers(config: dict) -> list:
     """Friendly CSV header names from portal column config."""
-    return [c['label'] for c in config.get('columns', [])]
+    return _portal_query_parts(config)["headers"]
 
 
 def _build_where(from_date, to_date, filters, text_filters,
-                 restrict_col, restrict_values, date_col, allowed_cols):
+                 restrict_cols, restrict_values, date_col, allowed_cols):
     """Build SQL WHERE clause dynamically for any portal."""
     date_col = date_col.upper()
     conds = [
@@ -125,10 +297,15 @@ def _build_where(from_date, to_date, filters, text_filters,
         f"CAST({date_col} AS DATE) <= '{_safe(to_date)}'",
     ]
 
-    # Row-level restriction (e.g. BRAND, REGION)
-    if restrict_col and restrict_values:
-        col = restrict_col.upper()
-        q   = ', '.join(f"N'{_safe(v)}'" for v in restrict_values)
+    restrict_cols = [c.upper() for c in (restrict_cols or [])]
+    restrict_map = restrict_values if isinstance(restrict_values, dict) else {}
+
+    # Row-level restrictions (e.g. BRAND + REGION)
+    for col, values in restrict_map.items():
+        col = col.upper()
+        if col not in restrict_cols or col not in allowed_cols or not values:
+            continue
+        q = ', '.join(f"N'{_safe(v)}'" for v in values)
         conds.append(f'{col} IN ({q})')
 
     # Dropdown / multi-select filters (fd_ prefix from frontend)
@@ -136,7 +313,7 @@ def _build_where(from_date, to_date, filters, text_filters,
         col = col.upper()
         if col not in allowed_cols:
             continue
-        if col == (restrict_col or '').upper() and restrict_values:
+        if col in restrict_map and restrict_map[col]:
             continue  # already applied above
         want_blank = '__blank__' in values
         non_blank  = [v for v in values if v != '__blank__']
@@ -586,6 +763,7 @@ def list_portals():
                     "created_at": str(r[5]), "is_active": r[6],
                     "user_count": user_count,
                     "restrict_col": cfg.get("restrict_col") or "",
+                    "restrict_cols": _portal_restrict_cols(cfg),
                 })
         return jsonify({"portals": portals})
     except Exception as e:
@@ -683,25 +861,37 @@ def delete_portal(portal_id):
 
 @app.route('/portals/<portal_id>/restrict-values', methods=['GET'])
 def portal_restrict_values(portal_id):
-    """Return all distinct values for the portal's restrict_col — used by admin access control UI."""
+    """Return distinct values for configured restriction columns."""
     try:
         portal      = _load_portal(portal_id)
         config      = portal['config']
-        restrict_col = config.get('restrict_col', '').strip().upper()
-        if not restrict_col:
-            return jsonify({"values": []})
+        restrict_cols = _portal_restrict_cols(config)
+        requested_col = request.args.get('column', '').strip().upper()
+        if requested_col:
+            restrict_cols = [c for c in restrict_cols if c == requested_col]
+        if not restrict_cols:
+            return jsonify({"values": [], "values_by_column": {}, "columns": []})
 
         view_name = portal['view_name']
-        conn   = _fab_conn()
-        rows   = conn.execute(f"""
-            SELECT DISTINCT CAST({restrict_col} AS NVARCHAR(500)) AS val
-            FROM {view_name}
-            WHERE {restrict_col} IS NOT NULL
-              AND CAST({restrict_col} AS NVARCHAR(500)) != N''
-            ORDER BY val
-        """).fetchall()
+        conn = _fab_conn()
+        values_by_column = {}
+        for restrict_col in restrict_cols:
+            rows = conn.execute(f"""
+                SELECT DISTINCT CAST({restrict_col} AS NVARCHAR(500)) AS val
+                FROM {view_name}
+                WHERE {restrict_col} IS NOT NULL
+                  AND CAST({restrict_col} AS NVARCHAR(500)) != N''
+                ORDER BY val
+            """).fetchall()
+            values_by_column[restrict_col] = [r[0] for r in rows]
         conn.close()
-        return jsonify({"values": [r[0] for r in rows], "column": restrict_col})
+        first_col = restrict_cols[0] if restrict_cols else ""
+        return jsonify({
+            "values": values_by_column.get(first_col, []),
+            "values_by_column": values_by_column,
+            "columns": restrict_cols,
+            "column": first_col,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -714,7 +904,7 @@ def discover_columns(portal_id):
         if not view or not _valid_view_name(view):
             return jsonify({"error": "view must be schema.ViewName format"}), 400
 
-        NUMERIC_TYPES = {2, 3, 4, 5, 6}  # pyodbc SQL type codes for numeric
+        NUMERIC_TYPES = {-7, -6, -5, 2, 3, 4, 5, 6, 7, 8}  # pyodbc SQL type codes for numeric
         conn   = _fab_conn()
         cursor = conn.cursor()
         cursor.execute(f"SELECT TOP 0 * FROM {view}")
@@ -723,6 +913,8 @@ def discover_columns(portal_id):
             "label":    d[0].replace("_", " ").title(),
             "show":     True,
             "currency": False,
+            "is_numeric": d[1] in NUMERIC_TYPES,
+            "aggregate": "sum" if d[1] in NUMERIC_TYPES else "group",
             "filter":   "dropdown" if d[1] not in NUMERIC_TYPES else "none",
             "type":     "dropdown" if d[1] not in NUMERIC_TYPES else "none",
             "group":    "Other",
@@ -868,23 +1060,22 @@ def data_load():
         config      = portal['config']
         view_name   = portal['view_name']
         date_col    = config.get('date_col', 'INVOICE_DATE')
-        restrict_col = config.get('restrict_col')
+        restrict_cols = _portal_restrict_cols(config)
+        restrict_map = _normalize_restrictions(config, restrict_values)
         allowed_cols = _portal_allowed_cols(config)
 
         where = _build_where(
             from_date, to_date, filters, text_filters,
-            restrict_col, restrict_values, date_col, allowed_cols
+            restrict_cols, restrict_map, date_col, allowed_cols
         )
         conn = _fab_conn()
 
         if count_only:
-            row = conn.execute(f'SELECT COUNT(*) FROM {view_name} WHERE {where}').fetchone()
+            row = conn.execute(_portal_count_sql(config, view_name, where)).fetchone()
             conn.close()
             return jsonify({'count': row[0]})
 
-        data_cols = _portal_data_cols(config)
-        cols_sql  = ', '.join(data_cols)
-        sql       = f'SELECT TOP {limit} {cols_sql} FROM {view_name} WHERE {where} ORDER BY {date_col} DESC'
+        sql = _portal_select_sql(config, view_name, where, limit=limit)
 
         df = pd.read_sql(sql, conn)
         conn.close()
@@ -914,12 +1105,16 @@ def data_values():
         from_date       = request.args.get('from_date', '')
         to_date         = request.args.get('to_date', '')
         restrict_values = request.args.getlist('restrict_value')
+        restrict_values_json = request.args.get('restrict_values', '')
+        if restrict_values_json:
+            restrict_values = json.loads(restrict_values_json)
 
         portal      = _load_portal(portal_id)
         config      = portal['config']
         view_name   = portal['view_name']
         date_col    = config.get('date_col', 'INVOICE_DATE')
-        restrict_col = config.get('restrict_col')
+        restrict_cols = _portal_restrict_cols(config)
+        restrict_map = _normalize_restrictions(config, restrict_values)
         allowed_cols = _portal_allowed_cols(config)
 
         if column not in allowed_cols:
@@ -927,7 +1122,7 @@ def data_values():
 
         where = _build_where(
             from_date, to_date, {}, {},
-            restrict_col, restrict_values, date_col, allowed_cols
+            restrict_cols, restrict_map, date_col, allowed_cols
         )
         conn = _fab_conn()
 
@@ -967,6 +1162,9 @@ def export_data():
         from_date       = request.args.get('from_date', '').strip()
         to_date         = request.args.get('to_date', '').strip()
         restrict_values = request.args.getlist('restrict_value')
+        restrict_values_json = request.args.get('restrict_values', '')
+        if restrict_values_json:
+            restrict_values = json.loads(restrict_values_json)
 
         if not from_date or not to_date:
             return jsonify({'error': 'from_date and to_date required'}), 400
@@ -975,7 +1173,8 @@ def export_data():
         config       = portal['config']
         view_name    = portal['view_name']
         date_col     = config.get('date_col', 'INVOICE_DATE')
-        restrict_col = config.get('restrict_col')
+        restrict_cols = _portal_restrict_cols(config)
+        restrict_map = _normalize_restrictions(config, restrict_values)
         allowed_cols = _portal_allowed_cols(config)
 
         # Parse fd_ (dropdown IN) and ft_ (text LIKE) filter params
@@ -990,13 +1189,11 @@ def export_data():
 
         where     = _build_where(
             from_date, to_date, filters, text_filters,
-            restrict_col, restrict_values, date_col, allowed_cols
+            restrict_cols, restrict_map, date_col, allowed_cols
         )
         file_stem = f'{portal_id}_{from_date}_to_{to_date}'
-        data_cols = _portal_data_cols(config)
         headers   = _portal_export_headers(config)
-        cols_sql  = ', '.join(data_cols)
-        sql       = f'SELECT {cols_sql} FROM {view_name} WHERE {where} ORDER BY {date_col} DESC'
+        sql       = _portal_select_sql(config, view_name, where)
 
         conn   = _fab_conn()
         cursor = conn.cursor()
