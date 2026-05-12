@@ -35,9 +35,9 @@ function LoginPage({ onLogin, loading }) {
             <p>Enterprise sales intelligence platform</p>
           </div>
           <div className="auth-tagline">
-            <div className="auth-feature">📊 POS &amp; AIL Sales Data</div>
-            <div className="auth-feature">🔒 Role-Based Brand Access</div>
-            <div className="auth-feature">⬇️ Bulk CSV Export</div>
+            <div className="auth-feature">📊 Configurable Data Portals</div>
+            <div className="auth-feature">🔒 Multi-Column Row Access</div>
+            <div className="auth-feature">⬇️ Summarized CSV Exports</div>
           </div>
         </div>
 
