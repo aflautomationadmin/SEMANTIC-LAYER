@@ -143,12 +143,12 @@ def _aggregate_for_col(col: dict) -> str:
 
 def _col_expr(key: str, date_col: str) -> str:
     key = key.upper()
-    return f'CAST({key} AS DATE)' if key == date_col.upper() else key
+    return f'CAST({key} AS DATE)' if date_col and key == date_col.upper() else key
 
 
 def _portal_query_parts(config: dict):
     """Build grouped SELECT metadata from the visible portal columns."""
-    date_col = config.get('date_col', 'INVOICE_DATE').upper()
+    date_col = (config.get('date_col') or '').upper()
     dimensions, dimension_keys, measures, select_parts, headers, output = [], [], [], [], [], []
 
     for c in _portal_visible_cols(config):
@@ -291,11 +291,13 @@ def _portal_export_headers(config: dict) -> list:
 def _build_where(from_date, to_date, filters, text_filters,
                  restrict_cols, restrict_values, date_col, allowed_cols):
     """Build SQL WHERE clause dynamically for any portal."""
-    date_col = date_col.upper()
-    conds = [
-        f"CAST({date_col} AS DATE) >= '{_safe(from_date)}'",
-        f"CAST({date_col} AS DATE) <= '{_safe(to_date)}'",
-    ]
+    date_col = (date_col or '').upper()
+    conds = []
+    if date_col and from_date and to_date:
+        conds.extend([
+            f"CAST({date_col} AS DATE) >= '{_safe(from_date)}'",
+            f"CAST({date_col} AS DATE) <= '{_safe(to_date)}'",
+        ])
 
     restrict_cols = [c.upper() for c in (restrict_cols or [])]
     restrict_map = restrict_values if isinstance(restrict_values, dict) else {}
@@ -335,7 +337,7 @@ def _build_where(from_date, to_date, filters, text_filters,
             f"LOWER(CAST({col} AS NVARCHAR(MAX))) LIKE N'%{_safe(str(val).lower())}%'"
         )
 
-    return ' AND '.join(conds)
+    return ' AND '.join(conds) if conds else '1=1'
 
 
 # ── POS Sales default portal config (migration seed) ─────────────────────
@@ -1053,13 +1055,12 @@ def data_load():
         limit           = min(int(body.get('limit', 50_000)), 100_000)
         count_only      = body.get('count_only', False)
 
-        if not from_date or not to_date:
-            return jsonify({'error': 'from_date and to_date required'}), 400
-
         portal      = _load_portal(portal_id)
         config      = portal['config']
         view_name   = portal['view_name']
-        date_col    = config.get('date_col', 'INVOICE_DATE')
+        date_col    = config.get('date_col')
+        if date_col and (not from_date or not to_date):
+            return jsonify({'error': 'from_date and to_date required'}), 400
         restrict_cols = _portal_restrict_cols(config)
         restrict_map = _normalize_restrictions(config, restrict_values)
         allowed_cols = _portal_allowed_cols(config)
@@ -1080,8 +1081,8 @@ def data_load():
         df = pd.read_sql(sql, conn)
         conn.close()
 
-        date_col_upper = date_col.upper()
-        if date_col_upper in df.columns:
+        date_col_upper = (date_col or '').upper()
+        if date_col_upper and date_col_upper in df.columns:
             df[date_col_upper] = df[date_col_upper].astype(str)
         df = df.fillna('')
 
@@ -1112,7 +1113,7 @@ def data_values():
         portal      = _load_portal(portal_id)
         config      = portal['config']
         view_name   = portal['view_name']
-        date_col    = config.get('date_col', 'INVOICE_DATE')
+        date_col    = config.get('date_col')
         restrict_cols = _portal_restrict_cols(config)
         restrict_map = _normalize_restrictions(config, restrict_values)
         allowed_cols = _portal_allowed_cols(config)
@@ -1166,13 +1167,12 @@ def export_data():
         if restrict_values_json:
             restrict_values = json.loads(restrict_values_json)
 
-        if not from_date or not to_date:
-            return jsonify({'error': 'from_date and to_date required'}), 400
-
         portal       = _load_portal(portal_id)
         config       = portal['config']
         view_name    = portal['view_name']
-        date_col     = config.get('date_col', 'INVOICE_DATE')
+        date_col     = config.get('date_col')
+        if date_col and (not from_date or not to_date):
+            return jsonify({'error': 'from_date and to_date required'}), 400
         restrict_cols = _portal_restrict_cols(config)
         restrict_map = _normalize_restrictions(config, restrict_values)
         allowed_cols = _portal_allowed_cols(config)

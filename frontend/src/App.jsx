@@ -176,7 +176,8 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
   const CURRENCY_COLS = new Set((config.columns || []).filter(c => c.currency).map(c => c.key))
   const NUMERIC_COLS  = new Set((config.columns || []).filter(c => c.currency || c.is_numeric || (c.aggregate && c.aggregate !== 'group')).map(c => c.key))
   const GROUPS        = config.groups   || [...new Set(FILTER_CONFIG.map(f => f.group))]
-  const dateCol       = (config.date_col  || 'INVOICE_DATE').toUpperCase()
+  const hasDateFilter = !!config.date_col
+  const dateCol       = (config.date_col || '').toUpperCase()
   const restrictCols  = (config.restrict_cols && config.restrict_cols.length)
     ? config.restrict_cols.map(c => String(c).toUpperCase())
     : (config.restrict_col ? [String(config.restrict_col).toUpperCase()] : [])
@@ -213,7 +214,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
   ).length
 
   const loadData = useCallback(async () => {
-    if (!fromDate || !toDate) return
+    if (hasDateFilter && (!fromDate || !toDate)) return
     setLoading(true); setError(null); setPage(1); setTotalCount(null)
     const t0 = Date.now()
     try {
@@ -257,7 +258,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
 
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
-  }, [fromDate, toDate, filterValues, portal.id, restrictValues])
+  }, [fromDate, toDate, filterValues, portal.id, restrictValues, hasDateFilter])
 
   const handleDownload = useCallback(async () => {
     setDlState({ phase: 'preparing', pct: 0 })
@@ -357,14 +358,18 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         {/* ── Top bar ── */}
         <section className="top-bar">
           <div className="top-bar-left">
-            <div className="filter-group">
-              <label>From Date</label>
-              <input type="date" value={fromDate} max={toDate} onChange={e => setFromDate(e.target.value)} />
-            </div>
-            <div className="filter-group">
-              <label>To Date</label>
-              <input type="date" value={toDate} min={fromDate} max={today} onChange={e => setToDate(e.target.value)} />
-            </div>
+            {hasDateFilter && (
+              <>
+                <div className="filter-group">
+                  <label>From Date</label>
+                  <input type="date" value={fromDate} max={toDate} onChange={e => setFromDate(e.target.value)} />
+                </div>
+                <div className="filter-group">
+                  <label>To Date</label>
+                  <input type="date" value={toDate} min={fromDate} max={today} onChange={e => setToDate(e.target.value)} />
+                </div>
+              </>
+            )}
             <button className="panel-toggle" onClick={() => setPanelOpen(o => !o)}>
               {panelOpen ? '▲' : '▼'} Filters
               {activeCount > 0 && <span className="badge">{activeCount}</span>}

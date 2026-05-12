@@ -780,17 +780,17 @@ function Step1Info({ draft, setDraft, onDiscover, discovering, discoverError }) 
         )}
       </div>
       <div className="wiz-field">
-        <label className="field-label">Date Column <span className="req">*</span></label>
+        <label className="field-label">Date Column <span className="field-hint">(optional - enables date range filter)</span></label>
         {draft.columns.length > 0
           ? (
             <select className="log-select" value={draft.date_col}
               onChange={e => setDraft(d => ({ ...d, date_col: e.target.value }))}>
-              <option value="">— select —</option>
+              <option value="">No date filter</option>
               {draft.columns.map(c => <option key={c.key} value={c.key}>{c.key}</option>)}
             </select>
           )
           : (
-            <input className="field-input" placeholder="e.g. INVOICE_DATE"
+            <input className="field-input" placeholder="e.g. INVOICE_DATE (leave blank if not needed)"
               value={draft.date_col}
               onChange={e => setDraft(d => ({ ...d, date_col: e.target.value }))} />
           )
@@ -1048,7 +1048,7 @@ function PortalWizard({ editing, onClose, onSaved }) {
       filters,
       columns:      draft.columns,
       groups,
-      date_col:     draft.date_col,
+      date_col:     draft.date_col || null,
       restrict_col: draft.restrict_cols[0] || null,
       restrict_cols: draft.restrict_cols,
       summarize:    true,
@@ -1058,7 +1058,6 @@ function PortalWizard({ editing, onClose, onSaved }) {
   const save = async () => {
     if (!draft.name.trim())      { setSaveError('Portal name is required.'); return }
     if (!draft.view_name.trim()) { setSaveError('Fabric view name is required.'); return }
-    if (!draft.date_col)         { setSaveError('Date column is required.'); return }
     if (draft.columns.length === 0) { setSaveError('Discover columns first.'); return }
 
     setSaving(true); setSaveError('')
@@ -1090,7 +1089,7 @@ function PortalWizard({ editing, onClose, onSaved }) {
   }
 
   const canNext = () =>
-    draft.name.trim() && draft.view_name.trim() && draft.columns.length > 0 && draft.date_col
+    draft.name.trim() && draft.view_name.trim() && draft.columns.length > 0
 
   return (
     <div className="modal-overlay" onClick={onClose}>
