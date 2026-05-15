@@ -1437,12 +1437,21 @@ function fmtDetails(action, details) {
     if (Array.isArray(b)) return b.length ? b.join(', ') : 'No brands'
   }
   if (action === 'load_data') {
-    return `${details.from_date} → ${details.to_date}  ·  ${Number(details.row_count ?? 0).toLocaleString('en-IN')} rows  ·  ${details.filter_count ?? 0} filters  ·  ${details.duration_ms ?? 0}ms`
+    const totalRows = Number(details.total_rows ?? details.row_count ?? 0).toLocaleString('en-IN')
+    const previewRows = Number(details.preview_rows ?? details.row_count ?? 0).toLocaleString('en-IN')
+    const previewText = details.capped ? ` · preview ${previewRows}` : ''
+    const countNote = details.count_failed ? ' · count unavailable' : ''
+    return `${details.from_date} → ${details.to_date}  ·  ${totalRows} total rows${previewText}  ·  ${details.filter_count ?? 0} filters  ·  ${details.duration_ms ?? 0}ms${countNote}`
   }
   if (action === 'csv_export') {
     return `${details.from_date} → ${details.to_date}  ·  ${Number(details.total_rows ?? 0).toLocaleString('en-IN')} rows  ·  ${details.files ?? 1} file(s)`
   }
   return JSON.stringify(details)
+}
+
+function fmtPortal(details) {
+  if (!details) return '—'
+  return details.portal_name || details.portal_id || '—'
 }
 
 function LogsTab() {
@@ -1488,9 +1497,16 @@ function LogsTab() {
   }
 
   const exportCSV = () => {
-    const header = 'Timestamp,User,Email,Action,Details'
+    const header = 'Timestamp,User,Email,Action,Portal,Details'
     const rows = logs.map(l =>
-      [`"${fmtTs(l.ts)}"`, `"${l.name}"`, `"${l.email}"`, `"${l.action}"`, `"${fmtDetails(l.action, l.details).replace(/"/g, '""')}"`].join(',')
+      [
+        `"${fmtTs(l.ts)}"`,
+        `"${l.name}"`,
+        `"${l.email}"`,
+        `"${l.action}"`,
+        `"${fmtPortal(l.details).replace(/"/g, '""')}"`,
+        `"${fmtDetails(l.action, l.details).replace(/"/g, '""')}"`,
+      ].join(',')
     )
     const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' })
     const a = document.createElement('a')
@@ -1551,15 +1567,16 @@ function LogsTab() {
               <th>User</th>
               <th>Email</th>
               <th>Action</th>
+              <th>Portal</th>
               <th>Details</th>
             </tr>
           </thead>
           <tbody>
             {loading && (
-              <tr><td colSpan={5} className="empty-row">Loading…</td></tr>
+              <tr><td colSpan={6} className="empty-row">Loading…</td></tr>
             )}
             {!loading && logs.length === 0 && (
-              <tr><td colSpan={5} className="empty-row">No activity logs found.</td></tr>
+              <tr><td colSpan={6} className="empty-row">No activity logs found.</td></tr>
             )}
             {!loading && logs.map(l => {
               const badge = ACTION_LABELS[l.action] || { label: l.action, cls: '' }
@@ -1569,6 +1586,7 @@ function LogsTab() {
                   <td className="cell-email">{l.name || '—'}</td>
                   <td style={{ fontSize: 12, color: '#555' }}>{l.email}</td>
                   <td><span className={`badge-action ${badge.cls}`}>{badge.label}</span></td>
+                  <td style={{ fontSize: 12, color: '#555' }}>{fmtPortal(l.details)}</td>
                   <td className="log-detail">{fmtDetails(l.action, l.details)}</td>
                 </tr>
               )

@@ -242,23 +242,40 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
       setLoaded(true)
       setTotalCount(data.length)
 
-      logEvent(user, 'load_data', {
-        portal_id: portal.id, from_date: fromDate, to_date: toDate,
-        filter_count: filterCount, row_count: data.length, duration_ms: Date.now() - t0,
-      })
-
       // Background count query
       fabricLoad('/data/load', {
         portal_id: portal.id, from_date: fromDate, to_date: toDate,
         filters: dropdownFilters, text_filters: textFilters,
         restrict_values: restrictValues, count_only: true,
       })
-        .then(r => { if (r.count > 0) setTotalCount(r.count) })
-        .catch(() => {})
+        .then(r => {
+          const fullCount = Number(r.count ?? data.length)
+          if (fullCount > 0) setTotalCount(fullCount)
+          logEvent(user, 'load_data', {
+            portal_id: portal.id, portal_name: portal.name, from_date: fromDate, to_date: toDate,
+            filter_count: filterCount,
+            row_count: fullCount,
+            total_rows: fullCount,
+            preview_rows: data.length,
+            capped: fullCount > data.length,
+            duration_ms: Date.now() - t0,
+          })
+        })
+        .catch(() => {
+          logEvent(user, 'load_data', {
+            portal_id: portal.id, portal_name: portal.name, from_date: fromDate, to_date: toDate,
+            filter_count: filterCount,
+            row_count: data.length,
+            total_rows: data.length,
+            preview_rows: data.length,
+            count_failed: true,
+            duration_ms: Date.now() - t0,
+          })
+        })
 
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
-  }, [fromDate, toDate, filterValues, portal.id, restrictValues, hasDateFilter])
+  }, [fromDate, toDate, filterValues, portal.id, portal.name, restrictValues, hasDateFilter, user])
 
   const handleDownload = useCallback(async () => {
     setDlState({ phase: 'preparing', pct: 0 })
@@ -298,7 +315,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
       setTimeout(() => setDlState(null), 1500)
 
       logEvent(user, 'csv_export', {
-        portal_id: portal.id, from_date: fromDate, to_date: toDate, filter_count: activeCount,
+        portal_id: portal.id, portal_name: portal.name, from_date: fromDate, to_date: toDate, filter_count: activeCount,
       })
     } catch (e) {
       setError(`Download failed: ${e.message}`)
