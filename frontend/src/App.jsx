@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { msalInstance } from './authConfig'
 import AdminPage from './AdminPage'
+import KpiInputPortal from './KpiInputPortal'
 import arvindLogo from './assets/arvind-logo.png'
 import { logEvent } from './logger'
 import './App.css'
@@ -168,6 +169,10 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
 
   // Portal must be provided
   if (!portal) return null
+
+  if (portal.config?.type === 'kpi_input') {
+    return <KpiInputPortal user={user} portal={portal} onBack={onBack} />
+  }
 
   // ── Derive config from portal prop ──────────────────────────────────
   const config       = portal.config || {}

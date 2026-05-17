@@ -13,6 +13,7 @@ import json
 import os
 import io
 import re
+import traceback
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -63,6 +64,84 @@ def _fab_conn():
 def _safe(val: str) -> str:
     """Escape a value for SQL single-quoted string literals."""
     return str(val).replace("'", "''")
+
+
+def _clean_kpi_text(val) -> str:
+    """Uppercase text and remove special characters before Fabric insert."""
+    text = '' if val is None else str(val).upper()
+    text = text.replace('&', ' AND ')
+    text = re.sub(r'[^A-Z0-9 ]+', ' ', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _target_float(val):
+    if val is None:
+        return None
+    text = str(val).strip()
+    if not text:
+        return None
+    text = text.replace(',', '').replace('%', '')
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _clean_kpi_month(val) -> str:
+    text = '' if val is None else str(val).strip().upper()
+    match = re.match(r'^(\d{4})[_ -]?(\d{2})$', text)
+    if not match:
+        return _clean_kpi_text(text)
+    return f"{match.group(1)}_{match.group(2)}"
+
+
+def _kpi_insert_sql() -> str:
+    return """
+        INSERT INTO prd.DIM_UI_KPI_TRACKER_THCK
+            (KPT_CAT, KPI, [TARGET], BRAND, [MONTH], LOAD_RUN_DATE)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """
+
+
+def _kpi_verify_sql() -> str:
+    return """
+        SELECT COUNT(*)
+        FROM prd.DIM_UI_KPI_TRACKER_THCK
+        WHERE LOAD_RUN_DATE = ?
+    """
+
+
+def _kpi_existing_sql() -> str:
+    return """
+        SELECT KPT_CAT, KPI, [TARGET], BRAND, LOAD_RUN_DATE
+        FROM prd.DIM_UI_KPI_TRACKER_THCK
+        WHERE [MONTH] = ?
+        ORDER BY LOAD_RUN_DATE
+    """
+
+
+def _kpi_value_key(brand, category, kpi) -> str:
+    return '|'.join([
+        _clean_kpi_text(brand),
+        _clean_kpi_text(category),
+        _clean_kpi_text(kpi),
+    ])
+
+
+def _kpi_template_key_map() -> dict:
+    mapping = {}
+    for sheet in FY27_KPI_TRACKER_PVH_TEMPLATE:
+        for idx, row in enumerate(sheet.get('rows') or []):
+            mapping[_kpi_value_key(sheet.get('brand'), row.get('category'), row.get('kpi'))] = f"{sheet.get('id')}::{idx}"
+    return mapping
+
+
+def _format_kpi_target(val) -> str:
+    if val is None:
+        return ''
+    if isinstance(val, float) and val.is_integer():
+        return str(int(val))
+    return str(val)
 
 
 def _valid_view_name(view: str) -> bool:
@@ -472,6 +551,93 @@ DEFAULT_CONFIG = {
     }
 }
 
+FY27_KPI_TRACKER_PVH_TEMPLATE = [
+    {
+        "id": "KPI - 1_TH",
+        "brand": "TOMMY HILFIGER",
+        "title": "KPI - 1 TH",
+        "target_label": "Apr'26 KPI Target",
+        "rows": [
+            {"category": "Financial", "kpi": "NSV (In Rs. Crs.)", "target": "Linked from source workbook"},
+            {"category": "Financial", "kpi": "EBIDTA %", "target": "Linked from source workbook"},
+            {"category": "Financial", "kpi": "Gross Margin (GP %)", "target": "Linked from source workbook"},
+            {"category": "Financial", "kpi": "Discount %", "target": "Linked from source workbook"},
+            {"category": "Financial", "kpi": "CBA %", "target": "Linked from source workbook"},
+            {"category": "Retail", "kpi": "Retail NSV (In Rs. Crs.)", "target": "Linked from source workbook"},
+            {"category": "Retail", "kpi": "LFL Growth %", "target": "Linked from source workbook"},
+            {"category": "Retail", "kpi": "Store Count", "target": "Linked from source workbook"},
+            {"category": "Retail", "kpi": "Store (Sq ft) in Lacs", "target": "Linked from source workbook"},
+            {"category": "Retail", "kpi": "SSPD (Sales per sq ft)", "target": "Linked from source workbook"},
+            {"category": "Retail", "kpi": "CBA (Retail) %", "target": "Linked from source workbook"},
+            {"category": "Retail", "kpi": "Markdown %", "target": "Linked from source workbook"},
+            {"category": "Retail", "kpi": "Conversion Rate %", "target": "Linked from source workbook"},
+            {"category": "Retail", "kpi": "UPT (Units per Transaction)", "target": "WIP"},
+            {"category": "Retail", "kpi": "ATV (Average Transaction Value)", "target": "WIP"},
+            {"category": "Retail", "kpi": "Average MRP", "target": "WIP"},
+            {"category": "Retail", "kpi": "ASP (Average Selling Price)", "target": "WIP"},
+            {"category": "Digital", "kpi": "Digital NSV (In Rs. Crs.)", "target": "Linked from source workbook"},
+            {"category": "Digital", "kpi": "Share of Digital B2C on Total Digital NSV %", "target": "Linked from source workbook"},
+            {"category": "Digital", "kpi": "Digital CBA %", "target": "Linked from source workbook"},
+            {"category": "Digital", "kpi": "Discount %", "target": "Linked from source workbook"},
+            {"category": "Digital", "kpi": "CODB % (Cost of Doing Business)", "target": "Linked from source workbook"},
+            {"category": "DTC", "kpi": "Share of DTC(Online + Retail) on Overall NSV %", "target": "Linked from source workbook"},
+            {"category": "Dept. Store", "kpi": "NSV (In Rs. Crs.)", "target": "Linked from source workbook"},
+            {"category": "Dept. Store", "kpi": "No. of Doors", "target": "Linked from source workbook"},
+            {"category": "Dept. Store", "kpi": "Returns %", "target": ""},
+            {"category": "MBO", "kpi": "NSV (In Rs. Crs.)", "target": "Linked from source workbook"},
+            {"category": "MBO", "kpi": "CN % on MRP", "target": "Linked from source workbook"},
+            {"category": "MBO", "kpi": "Returns %", "target": ""},
+        ],
+    },
+    {
+        "id": "KPI - 2_TH",
+        "brand": "TOMMY HILFIGER",
+        "title": "KPI - 2 TH",
+        "target_label": "Apr'26 KPI Target",
+        "rows": [
+            {"category": "Operational Efficiency", "kpi": "Inventory Turns", "target": "Linked from source workbook"},
+            {"category": "Operational Efficiency", "kpi": "Stock Aging (MUDA buckets incl. >2 yrs) (In Crs.)", "target": "0"},
+            {"category": "Brand / Marketing", "kpi": "Total Ad Spend (% of NSV)", "target": "Linked from source workbook"},
+            {"category": "Brand / Marketing", "kpi": "Brand vs Performance Media Mix (Ratio)", "target": ""},
+            {"category": "Brand / Marketing", "kpi": "Customer Acquisition (#)", "target": "WIP"},
+            {"category": "Brand / Marketing", "kpi": "Repeat Rate %", "target": "WIP"},
+            {"category": "Sourcing", "kpi": "Share of CTM %", "target": "NA"},
+            {"category": "Sourcing", "kpi": "Share of NOOS %", "target": "NA"},
+            {"category": "Sourcing", "kpi": "OTIF %", "target": "NA"},
+            {"category": "Sourcing", "kpi": "CTM Lead Time (Days)", "target": "NA"},
+            {"category": "Merchandising", "kpi": "SKU Width", "target": "NA"},
+            {"category": "Merchandising", "kpi": "Full Price Sell Through (FPST) %", "target": "NA"},
+            {"category": "Merchandising", "kpi": "Full Season Sell Through (FSST) %", "target": "NA"},
+            {"category": "Key Category Growth", "kpi": "Formal Shirts", "target": ""},
+            {"category": "Key Category Growth (MRP Val)", "kpi": "Trousers", "target": ""},
+            {"category": "Key Category Growth (MRP Val)", "kpi": "Sports Shirts", "target": ""},
+            {"category": "Key Category Growth (MRP Val)", "kpi": "TShirt", "target": ""},
+            {"category": "Key Category Growth (MRP Val)", "kpi": "Blazers", "target": ""},
+            {"category": "Key Category Growth (MRP Val)", "kpi": "Suits", "target": ""},
+            {"category": "Key Category Growth (MRP Val)", "kpi": "WW", "target": ""},
+            {"category": "Key Category Growth (MRP Val)", "kpi": "Others", "target": ""},
+            {"category": "Key Category Growth (MRP Val)", "kpi": "Total", "target": ""},
+        ],
+    },
+    {
+        "id": "KPI - 1_CK",
+        "brand": "CALVIN KLEIN",
+        "title": "KPI - 1 CK",
+        "target_label": "Apr'26 KPI Target",
+        "rows": [],
+    },
+    {
+        "id": "KPI - 2_CK",
+        "brand": "CALVIN KLEIN",
+        "title": "KPI - 2 CK",
+        "target_label": "Apr'26 KPI Target",
+        "rows": [],
+    },
+]
+
+FY27_KPI_TRACKER_PVH_TEMPLATE[2]["rows"] = [dict(r) for r in FY27_KPI_TRACKER_PVH_TEMPLATE[0]["rows"]]
+FY27_KPI_TRACKER_PVH_TEMPLATE[3]["rows"] = [dict(r) for r in FY27_KPI_TRACKER_PVH_TEMPLATE[1]["rows"]]
+
 
 # get_con() defined above as a singleton
 
@@ -524,6 +690,24 @@ def init_db():
         )
     """)
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS kpi_inputs (
+            id          INTEGER,
+            ts          TIMESTAMP,
+            portal_id   VARCHAR,
+            period      VARCHAR,
+            sheet_id    VARCHAR,
+            brand       VARCHAR,
+            category    VARCHAR,
+            kpi         VARCHAR,
+            target      VARCHAR,
+            value       VARCHAR,
+            remarks     VARCHAR,
+            email       VARCHAR,
+            name        VARCHAR
+        )
+    """)
+
     # ── Seed POS Sales portal if first boot ───────────────────────────
     if con.execute("SELECT COUNT(*) FROM portals").fetchone()[0] == 0:
         now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
@@ -553,6 +737,25 @@ def init_db():
                         )
         except Exception:
             pass
+
+    if con.execute("SELECT COUNT(*) FROM portals WHERE id='fy27-kpi-tracker-pvh'").fetchone()[0] == 0:
+        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        con.execute(
+            "INSERT INTO portals VALUES (?,?,?,?,?,?,?)",
+            [
+                'fy27-kpi-tracker-pvh',
+                'FY27 KPI Tracker PVH',
+                'Input portal for PVH FY27 KPI tracker values',
+                'input.FY27_KPI_TRACKER_PVH',
+                json.dumps({
+                    "type": "kpi_input",
+                    "template": "FY27_KPI_TRACKER_PVH",
+                    "source_file": "FY27 KPI Tracker_PVH.xlsx",
+                }),
+                now,
+                True,
+            ]
+        )
 
     # singleton — do not close
 
@@ -703,6 +906,163 @@ def clear_logs():
 
 
 # ── Portal CRUD endpoints ─────────────────────────────────────────────────
+
+@app.route('/kpi-template', methods=['GET'])
+def get_kpi_template():
+    """Return the FY27 KPI Tracker PVH input template."""
+    try:
+        portal_id = request.args.get('portal_id', 'fy27-kpi-tracker-pvh')
+        portal = _load_portal(portal_id)
+        if (portal.get('config') or {}).get('type') != 'kpi_input':
+            return jsonify({"error": "Portal is not a KPI input portal"}), 400
+        return jsonify({
+            "portal_id": portal_id,
+            "source_file": portal['config'].get('source_file'),
+            "sheets": FY27_KPI_TRACKER_PVH_TEMPLATE,
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/kpi-inputs', methods=['GET'])
+def get_kpi_inputs():
+    """Return existing KPI targets for a month, keyed by template row."""
+    try:
+        portal_id = request.args.get('portal_id', 'fy27-kpi-tracker-pvh')
+        period = _clean_kpi_month(request.args.get('period', ''))
+
+        if not period:
+            return jsonify({"error": "period is required"}), 400
+
+        portal = _load_portal(portal_id)
+        if (portal.get('config') or {}).get('type') != 'kpi_input':
+            return jsonify({"error": "Portal is not a KPI input portal"}), 400
+
+        key_map = _kpi_template_key_map()
+        values = {}
+        rows_loaded = 0
+
+        conn = None
+        try:
+            conn = _fab_conn()
+            cursor = conn.cursor()
+            cursor.execute(_kpi_existing_sql(), [period])
+            for category, kpi, target, brand, _load_run_date in cursor.fetchall():
+                row_key = key_map.get(_kpi_value_key(brand, category, kpi))
+                if row_key:
+                    values[row_key] = _format_kpi_target(target)
+                    rows_loaded += 1
+        finally:
+            if conn is not None:
+                conn.close()
+
+        return jsonify({
+            "status": "ok",
+            "period": period,
+            "values": values,
+            "rows_loaded": rows_loaded,
+            "table": "prd.DIM_UI_KPI_TRACKER_THCK",
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        print("KPI Fabric load failed:", traceback.format_exc(), flush=True)
+        return jsonify({
+            "error": str(e),
+            "table": "prd.DIM_UI_KPI_TRACKER_THCK",
+            "hint": "Could not read existing KPI targets from Fabric for the selected month.",
+        }), 500
+
+
+@app.route('/kpi-inputs', methods=['POST'])
+def save_kpi_inputs():
+    """Persist KPI input rows entered through an input portal."""
+    try:
+        body = request.get_json() or {}
+        portal_id = body.get('portal_id', 'fy27-kpi-tracker-pvh')
+        period = str(body.get('period', '')).strip()
+        entries = body.get('entries') or []
+
+        if not period:
+            return jsonify({"error": "period is required"}), 400
+        if not entries:
+            return jsonify({"error": "entries are required"}), 400
+
+        portal = _load_portal(portal_id)
+        if (portal.get('config') or {}).get('type') != 'kpi_input':
+            return jsonify({"error": "Portal is not a KPI input portal"}), 400
+
+        load_run_date = datetime.utcnow().strftime('%Y%m%d%H%M%S')
+        rows = []
+        null_targets = 0
+        for entry in entries:
+            target = _target_float(entry.get('target'))
+            if target is None:
+                null_targets += 1
+            rows.append([
+                _clean_kpi_text(entry.get('category', '')),
+                _clean_kpi_text(entry.get('kpi', '')),
+                target,
+                _clean_kpi_text(entry.get('brand', '')),
+                _clean_kpi_month(period),
+                _clean_kpi_text(load_run_date),
+            ])
+
+        if not rows:
+            return jsonify({"error": "No KPI rows to save"}), 400
+
+        brands = sorted({row[3] for row in rows if row[3]})
+        if not brands:
+            return jsonify({"error": "No brands found in KPI rows"}), 400
+
+        conn = None
+        try:
+            conn = _fab_conn()
+            conn.autocommit = True
+            cursor = conn.cursor()
+            brand_placeholders = ','.join(['?'] * len(brands))
+            cursor.execute(
+                f"""
+                DELETE FROM prd.DIM_UI_KPI_TRACKER_THCK
+                WHERE [MONTH] = ?
+                  AND BRAND IN ({brand_placeholders})
+                """,
+                [_clean_kpi_month(period), *brands],
+            )
+            insert_sql = _kpi_insert_sql()
+            try:
+                cursor.fast_executemany = True
+                cursor.executemany(insert_sql, rows)
+            except Exception:
+                cursor.fast_executemany = False
+                for row in rows:
+                    cursor.execute(insert_sql, row)
+            cursor.execute(_kpi_verify_sql(), [load_run_date])
+            verified = int(cursor.fetchone()[0])
+        finally:
+            if conn is not None:
+                conn.close()
+
+        return jsonify({
+            "status": "ok",
+            "saved": len(rows),
+            "skipped": 0,
+            "null_targets": null_targets,
+            "verified": verified,
+            "table": "prd.DIM_UI_KPI_TRACKER_THCK",
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        print("KPI Fabric insert failed:", traceback.format_exc(), flush=True)
+        return jsonify({
+            "error": str(e),
+            "table": "prd.DIM_UI_KPI_TRACKER_THCK",
+            "hint": "Check Fabric schema/table name, INSERT permission, ODBC credentials, and that CUBEJS_DB_NAME points to the warehouse containing the table.",
+        }), 500
+
 
 def _sync_portal_access(con, portal_id, access_list):
     """Replace all portal_access rows for portal_id with the given list."""

@@ -733,8 +733,8 @@ const GROUP_OPTIONS = ['Store', 'Invoice', 'Product', 'Date', 'Customer', 'Other
 const FILTER_TYPE_OPTIONS = ['none', 'dropdown', 'text']
 
 // Step indicator
-function WizardSteps({ step }) {
-  const steps = ['Info', 'Columns']
+function WizardSteps({ step, isKpiInput = false }) {
+  const steps = isKpiInput ? ['Info', 'KPI Input'] : ['Info', 'Columns']
   return (
     <div className="wiz-steps">
       {steps.map((s, i) => (
@@ -749,9 +749,29 @@ function WizardSteps({ step }) {
 }
 
 // Step 1 — Portal Info
-function Step1Info({ draft, setDraft, onDiscover, discovering, discoverError }) {
+function Step1Info({ draft, setDraft, onDiscover, discovering, discoverError, isKpiInput = false }) {
   return (
     <div className="wiz-body">
+      {isKpiInput && (
+        <div className="filter-summary">
+          <div className="filter-summary-header">
+            <span className="filter-summary-title">KPI Input Portal</span>
+            <span className="filter-summary-hint">Saves targets into Fabric and replaces rows by selected month and active brand</span>
+          </div>
+          <div className="filter-cards">
+            <div className="filter-card">
+              <span className="filter-card-label">Target table</span>
+              <span className="filter-card-key">prd.DIM_UI_KPI_TRACKER_THCK</span>
+              <span className="filter-card-type type-dropdown">input</span>
+            </div>
+            <div className="filter-card">
+              <span className="filter-card-label">Template</span>
+              <span className="filter-card-key">{draft.template || 'FY27_KPI_TRACKER_PVH'}</span>
+              <span className="filter-card-type type-text">locked</span>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="wiz-field">
         <label className="field-label">Portal Name <span className="req">*</span></label>
         <input className="field-input" placeholder="e.g. POS Sales"
@@ -765,20 +785,22 @@ function Step1Info({ draft, setDraft, onDiscover, discovering, discoverError }) 
           onChange={e => setDraft(d => ({ ...d, description: e.target.value }))} />
       </div>
       <div className="wiz-field">
-        <label className="field-label">Fabric View Name <span className="req">*</span></label>
+        <label className="field-label">{isKpiInput ? 'Internal Portal Source' : 'Fabric View Name'} <span className="req">*</span></label>
         <div className="discover-row">
           <input className="field-input" placeholder="e.g. ui.V_MY_VIEW"
             value={draft.view_name}
+            disabled={isKpiInput}
             onChange={e => setDraft(d => ({ ...d, view_name: e.target.value }))} />
-          <button className="btn-discover" onClick={onDiscover} disabled={discovering || !draft.view_name.trim()}>
+          {!isKpiInput && <button className="btn-discover" onClick={onDiscover} disabled={discovering || !draft.view_name.trim()}>
             {discovering ? '…' : 'Discover Columns →'}
-          </button>
+          </button>}
         </div>
         {discoverError && <span className="wiz-error">{discoverError}</span>}
-        {draft.columns.length > 0 && (
+        {!isKpiInput && draft.columns.length > 0 && (
           <span className="wiz-ok">✓ {draft.columns.length} columns discovered</span>
         )}
       </div>
+      {!isKpiInput && <>
       <div className="wiz-field">
         <label className="field-label">Date Column <span className="field-hint">(optional - enables date range filter)</span></label>
         {draft.columns.length > 0
@@ -816,11 +838,51 @@ function Step1Info({ draft, setDraft, onDiscover, discovering, discoverError }) 
           )
         }
       </div>
+      </>}
     </div>
   )
 }
 
 // Step 2 — Column configurator
+function Step2KpiInput({ draft }) {
+  return (
+    <div className="wiz-body">
+      <div className="filter-summary">
+        <div className="filter-summary-header">
+          <span className="filter-summary-title">KPI Save Behavior</span>
+          <span className="filter-summary-hint">This portal uses the fixed FY27 KPI tracker template</span>
+        </div>
+        <div className="filter-cards">
+          <div className="filter-card">
+            <span className="filter-card-label">Month options</span>
+            <span className="filter-card-key">Previous, current, next month</span>
+            <span className="filter-card-type type-dropdown">YYYY_MM</span>
+          </div>
+          <div className="filter-card">
+            <span className="filter-card-label">Brand tabs</span>
+            <span className="filter-card-key">Save only active brand</span>
+            <span className="filter-card-type type-dropdown">replace</span>
+          </div>
+          <div className="filter-card">
+            <span className="filter-card-label">Blank targets</span>
+            <span className="filter-card-key">Stored as SQL NULL</span>
+            <span className="filter-card-type type-text">target</span>
+          </div>
+          <div className="filter-card">
+            <span className="filter-card-label">Existing data</span>
+            <span className="filter-card-key">Loaded from Fabric for selected month</span>
+            <span className="filter-card-type type-text">prefill</span>
+          </div>
+        </div>
+      </div>
+      <div className="wiz-field">
+        <label className="field-label">Source File</label>
+        <input className="field-input" value={draft.source_file || ''} disabled />
+      </div>
+    </div>
+  )
+}
+
 function Step2Columns({ draft, setDraft }) {
   const toggleAll = (field, val) =>
     setDraft(d => ({ ...d, columns: d.columns.map(c => ({ ...c, [field]: val })) }))
@@ -991,6 +1053,9 @@ function PortalWizard({ editing, onClose, onSaved }) {
     date_col:     '',
     restrict_cols: [],
     columns:      [],
+    config_type:  '',
+    template:     '',
+    source_file:  '',
   }
 
   const [draft, setDraft] = useState(() => {
@@ -1006,8 +1071,13 @@ function PortalWizard({ editing, onClose, onSaved }) {
         ? cfg.restrict_cols
         : (cfg.restrict_col ? [cfg.restrict_col] : []),
       columns:      cfg.columns || [],
+      config_type:  cfg.type || '',
+      template:     cfg.template || '',
+      source_file:  cfg.source_file || '',
     }
   })
+
+  const isKpiInput = draft.config_type === 'kpi_input'
 
   // Discover columns from Fabric
   const handleDiscover = async () => {
@@ -1035,6 +1105,13 @@ function PortalWizard({ editing, onClose, onSaved }) {
 
   // Build portal config JSON from draft
   const buildConfig = () => {
+    if (isKpiInput) {
+      return {
+        type: 'kpi_input',
+        template: draft.template || 'FY27_KPI_TRACKER_PVH',
+        source_file: draft.source_file || 'FY27 KPI Tracker_PVH.xlsx',
+      }
+    }
     const filters = draft.columns
       .filter(c => c.filter && c.filter !== 'none')
       .map(c => ({
@@ -1058,7 +1135,7 @@ function PortalWizard({ editing, onClose, onSaved }) {
   const save = async () => {
     if (!draft.name.trim())      { setSaveError('Portal name is required.'); return }
     if (!draft.view_name.trim()) { setSaveError('Fabric view name is required.'); return }
-    if (draft.columns.length === 0) { setSaveError('Discover columns first.'); return }
+    if (!isKpiInput && draft.columns.length === 0) { setSaveError('Discover columns first.'); return }
 
     setSaving(true); setSaveError('')
     try {
@@ -1089,7 +1166,7 @@ function PortalWizard({ editing, onClose, onSaved }) {
   }
 
   const canNext = () =>
-    draft.name.trim() && draft.view_name.trim() && draft.columns.length > 0
+    draft.name.trim() && draft.view_name.trim() && (isKpiInput || draft.columns.length > 0)
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -1099,7 +1176,7 @@ function PortalWizard({ editing, onClose, onSaved }) {
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
 
-        <WizardSteps step={step} />
+        <WizardSteps step={step} isKpiInput={isKpiInput} />
 
         {step === 1 && (
           <Step1Info
@@ -1107,9 +1184,13 @@ function PortalWizard({ editing, onClose, onSaved }) {
             onDiscover={handleDiscover}
             discovering={discovering}
             discoverError={discoverError}
+            isKpiInput={isKpiInput}
           />
         )}
-        {step === 2 && <Step2Columns draft={draft} setDraft={setDraft} />}
+        {step === 2 && (isKpiInput
+          ? <Step2KpiInput draft={draft} />
+          : <Step2Columns draft={draft} setDraft={setDraft} />
+        )}
 
         {saveError && <div className="wiz-save-error">{saveError}</div>}
 
