@@ -98,8 +98,8 @@ def _clean_kpi_month(val) -> str:
 def _kpi_insert_sql() -> str:
     return """
         INSERT INTO prd.DIM_UI_KPI_TRACKER_THCK
-            (KPT_CAT, KPI, [TARGET], BRAND, [MONTH], LOAD_RUN_DATE)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (KPT_CAT, KPI, [TARGET], ACTUAL, BRAND, [MONTH], LOAD_RUN_DATE)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """
 
 
@@ -113,7 +113,7 @@ def _kpi_verify_sql() -> str:
 
 def _kpi_existing_sql() -> str:
     return """
-        SELECT KPT_CAT, KPI, [TARGET], BRAND, LOAD_RUN_DATE
+        SELECT KPT_CAT, KPI, [TARGET], ACTUAL, BRAND, LOAD_RUN_DATE
         FROM prd.DIM_UI_KPI_TRACKER_THCK
         WHERE [MONTH] = ?
         ORDER BY LOAD_RUN_DATE
@@ -136,7 +136,7 @@ def _kpi_template_key_map() -> dict:
     return mapping
 
 
-def _format_kpi_target(val) -> str:
+def _format_kpi_number(val) -> str:
     if val is None:
         return ''
     if isinstance(val, float) and val.is_integer():
@@ -949,10 +949,13 @@ def get_kpi_inputs():
             conn = _fab_conn()
             cursor = conn.cursor()
             cursor.execute(_kpi_existing_sql(), [period])
-            for category, kpi, target, brand, _load_run_date in cursor.fetchall():
+            for category, kpi, target, actual, brand, _load_run_date in cursor.fetchall():
                 row_key = key_map.get(_kpi_value_key(brand, category, kpi))
                 if row_key:
-                    values[row_key] = _format_kpi_target(target)
+                    values[row_key] = {
+                        "target": _format_kpi_number(target),
+                        "actual": _format_kpi_number(actual),
+                    }
                     rows_loaded += 1
         finally:
             if conn is not None:
@@ -997,14 +1000,19 @@ def save_kpi_inputs():
         load_run_date = datetime.utcnow().strftime('%Y%m%d%H%M%S')
         rows = []
         null_targets = 0
+        null_actuals = 0
         for entry in entries:
             target = _target_float(entry.get('target'))
+            actual = _target_float(entry.get('actual'))
             if target is None:
                 null_targets += 1
+            if actual is None:
+                null_actuals += 1
             rows.append([
                 _clean_kpi_text(entry.get('category', '')),
                 _clean_kpi_text(entry.get('kpi', '')),
                 target,
+                actual,
                 _clean_kpi_text(entry.get('brand', '')),
                 _clean_kpi_month(period),
                 _clean_kpi_text(load_run_date),
@@ -1013,7 +1021,7 @@ def save_kpi_inputs():
         if not rows:
             return jsonify({"error": "No KPI rows to save"}), 400
 
-        brands = sorted({row[3] for row in rows if row[3]})
+        brands = sorted({row[4] for row in rows if row[4]})
         if not brands:
             return jsonify({"error": "No brands found in KPI rows"}), 400
 
@@ -1050,6 +1058,7 @@ def save_kpi_inputs():
             "saved": len(rows),
             "skipped": 0,
             "null_targets": null_targets,
+            "null_actuals": null_actuals,
             "verified": verified,
             "table": "prd.DIM_UI_KPI_TRACKER_THCK",
         })

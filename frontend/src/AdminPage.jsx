@@ -865,8 +865,8 @@ function Step2KpiInput({ draft }) {
           </div>
           <div className="filter-card">
             <span className="filter-card-label">Blank targets</span>
-            <span className="filter-card-key">Stored as SQL NULL</span>
-            <span className="filter-card-type type-text">target</span>
+            <span className="filter-card-key">TARGET and ACTUAL stored as SQL NULL when empty</span>
+            <span className="filter-card-type type-text">values</span>
           </div>
           <div className="filter-card">
             <span className="filter-card-label">Existing data</span>

@@ -86,20 +86,35 @@ export default function KpiInputPortal({ user, portal, onBack }) {
 
   const rowKey = (sheetId, idx) => `${sheetId}::${idx}`
 
-  const setRowValue = (sheetId, idx, val) =>
-    setValues(prev => ({ ...prev, [rowKey(sheetId, idx)]: val }))
+  const rowValue = (key, field) => {
+    const val = values[key]
+    if (val && typeof val === 'object') return val[field] || ''
+    return field === 'target' ? (val || '') : ''
+  }
+
+  const setRowValue = (sheetId, idx, field, val) =>
+    setValues(prev => {
+      const key = rowKey(sheetId, idx)
+      const current = prev[key] && typeof prev[key] === 'object'
+        ? prev[key]
+        : { target: prev[key] || '', actual: '' }
+      return { ...prev, [key]: { ...current, [field]: val } }
+    })
 
   const entries = () => {
     const result = []
     ;(activeSection?.sheets || []).forEach(sheet => {
       ;(sheet.rows || []).forEach((row, idx) => {
-        const target = (values[rowKey(sheet.id, idx)] || '').trim()
+        const key = rowKey(sheet.id, idx)
+        const target = rowValue(key, 'target').trim()
+        const actual = rowValue(key, 'actual').trim()
         result.push({
           sheet_id: sheet.id,
           brand: sheet.brand,
           category: row.category,
           kpi: row.kpi,
           target,
+          actual,
         })
       })
     })
@@ -127,7 +142,7 @@ export default function KpiInputPortal({ user, portal, onBack }) {
         const detail = [data.error, data.hint].filter(Boolean).join(' ')
         throw new Error(detail || 'Save failed')
       }
-      setSaved(`${data.saved} KPI target${data.saved === 1 ? '' : 's'} saved to Fabric. ${data.verified ?? data.saved} verified in table.${data.null_targets ? ` ${data.null_targets} NULL target${data.null_targets === 1 ? '' : 's'}.` : ''}`)
+      setSaved(`${data.saved} KPI row${data.saved === 1 ? '' : 's'} saved to Fabric. ${data.verified ?? data.saved} verified in table.${data.null_targets ? ` ${data.null_targets} NULL target${data.null_targets === 1 ? '' : 's'}.` : ''}${data.null_actuals ? ` ${data.null_actuals} NULL actual${data.null_actuals === 1 ? '' : 's'}.` : ''}`)
       logEvent(user, 'kpi_input_submit', {
         portal_id: portal.id,
         portal_name: portal.name,
@@ -205,7 +220,7 @@ export default function KpiInputPortal({ user, portal, onBack }) {
                 <div className="kpi-panel-head">
                   <div>
                     <h2>{activeSection.brand}</h2>
-                    <p>Enter numeric target values. Text is cleaned to uppercase before saving.</p>
+                    <p>Enter numeric target and actual values. Text is cleaned to uppercase before saving.</p>
                   </div>
                   <span className="kpi-count">
                     {activeSection.sheets.reduce((sum, s) => sum + s.rows.length, 0)} KPIs
@@ -219,6 +234,7 @@ export default function KpiInputPortal({ user, portal, onBack }) {
                         <th>Category</th>
                         <th>KPI</th>
                         <th>Target</th>
+                        <th>Actual</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -232,9 +248,18 @@ export default function KpiInputPortal({ user, portal, onBack }) {
                               <td>
                                 <input
                                   className="kpi-input"
-                                  value={values[key] || ''}
-                                  onChange={e => setRowValue(sheet.id, idx, e.target.value)}
+                                  value={rowValue(key, 'target')}
+                                  onChange={e => setRowValue(sheet.id, idx, 'target', e.target.value)}
                                   placeholder="Enter target"
+                                  inputMode="decimal"
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  className="kpi-input"
+                                  value={rowValue(key, 'actual')}
+                                  onChange={e => setRowValue(sheet.id, idx, 'actual', e.target.value)}
+                                  placeholder="Enter actual"
                                   inputMode="decimal"
                                 />
                               </td>
