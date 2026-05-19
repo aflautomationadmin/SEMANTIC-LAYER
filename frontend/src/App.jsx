@@ -299,7 +299,29 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
     try {
       startPolling()
       const url = buildExportUrl(portal.id, fromDate, toDate, restrictValues, filterValues, FILTER_CONFIG, exportId)
-      const res = await fetch(url)
+      const startUrl = url.replace('/permissions-api/export?', '/permissions-api/export/start?')
+      const startRes = await fetch(startUrl)
+      if (!startRes.ok) {
+        const err = await startRes.json().catch(() => ({}))
+        throw new Error(err.error || `Server error ${startRes.status}`)
+      }
+
+      while (true) {
+        await new Promise(resolve => setTimeout(resolve, 1500))
+        const statusRes = await fetch(`/permissions-api/export/status?export_id=${encodeURIComponent(exportId)}`)
+        const status = await statusRes.json()
+        if (!statusRes.ok) throw new Error(status.error || `Server error ${statusRes.status}`)
+        setDlState(prev => prev ? {
+          ...prev,
+          rows: Number(status.rows || 0),
+          files: Number(status.files || 0),
+          serverStatus: status.status,
+        } : prev)
+        if (status.status === 'failed') throw new Error(status.error || 'Export failed')
+        if (status.status === 'ready') break
+      }
+
+      const res = await fetch(`/permissions-api/export/file?export_id=${encodeURIComponent(exportId)}`)
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         throw new Error(err.error || `Server error ${res.status}`)

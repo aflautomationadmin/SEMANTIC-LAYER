@@ -1538,6 +1538,173 @@ def data_values():
         return jsonify({'error': str(e)}), 500
 
 
+def _export_context(args):
+    portal_id = args.get('portal_id', 'pos-sales')
+    from_date = args.get('from_date', '').strip()
+    to_date = args.get('to_date', '').strip()
+    restrict_values = args.getlist('restrict_value')
+    restrict_values_json = args.get('restrict_values', '')
+    if restrict_values_json:
+        restrict_values = json.loads(restrict_values_json)
+
+    portal = _load_portal(portal_id)
+    config = portal['config']
+    view_name = portal['view_name']
+    date_col = config.get('date_col')
+    if date_col and (not from_date or not to_date):
+        raise ValueError('from_date and to_date required')
+
+    restrict_cols = _portal_restrict_cols(config)
+    restrict_map = _normalize_restrictions(config, restrict_values)
+    allowed_cols = _portal_allowed_cols(config)
+
+    filters, text_filters = {}, {}
+    for col in allowed_cols:
+        values = args.getlist(f'fd_{col}')
+        if values:
+            filters[col] = values
+        val = args.get(f'ft_{col}', '').strip()
+        if val:
+            text_filters[col] = val
+
+    where = _build_where(
+        from_date, to_date, filters, text_filters,
+        restrict_cols, restrict_map, date_col, allowed_cols
+    )
+    file_stem = f'{portal_id}_{from_date}_to_{to_date}'
+    return {
+        'portal_id': portal_id,
+        'file_stem': file_stem,
+        'headers': _portal_export_headers(config),
+        'sql': _portal_select_sql(config, view_name, where),
+    }
+
+
+def _write_export_zip(export_id, ctx):
+    conn = None
+    tmp_path = None
+    total_rows = 0
+    part = 1
+    try:
+        conn = _fab_conn()
+        cursor = conn.cursor()
+        cursor.arraysize = 10_000
+        _set_export_progress(export_id, status='querying', rows=0, files=0)
+        cursor.execute(ctx['sql'])
+        _set_export_progress(export_id, status='extracting', rows=0, files=1)
+
+        rows_per_file = 1_000_000
+        header_line = (','.join(f'"{h}"' for h in ctx['headers']) + '\n').encode('utf-8')
+
+        with tempfile.NamedTemporaryFile(prefix=f"{ctx['portal_id']}_", suffix='.zip', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as zf:
+            row_count = 0
+            csv_out = None
+            try:
+                csv_out = zf.open(f"{ctx['file_stem']}_part{part}.csv", 'w', force_zip64=True)
+                csv_out.write(header_line)
+                while True:
+                    batch = cursor.fetchmany(10_000)
+                    if not batch:
+                        break
+                    lines = [
+                        ','.join(f'"{("" if v is None else str(v)).replace(chr(34), chr(34)*2)}"'
+                                 for v in row)
+                        for row in batch
+                    ]
+                    csv_out.write(('\n'.join(lines) + '\n').encode('utf-8'))
+                    row_count += len(batch)
+                    total_rows += len(batch)
+                    _set_export_progress(export_id, status='extracting', rows=total_rows, files=part)
+                    if row_count >= rows_per_file:
+                        csv_out.close()
+                        csv_out = None
+                        part += 1
+                        row_count = 0
+                        _set_export_progress(export_id, status='extracting', rows=total_rows, files=part)
+                        csv_out = zf.open(f"{ctx['file_stem']}_part{part}.csv", 'w', force_zip64=True)
+                        csv_out.write(header_line)
+            finally:
+                if csv_out is not None and not csv_out.closed:
+                    csv_out.close()
+    finally:
+        if conn is not None:
+            conn.close()
+
+    return tmp_path, total_rows, part
+
+
+def _run_export_job(export_id, ctx):
+    try:
+        _set_export_progress(export_id, status='starting', rows=0, files=0, portal_id=ctx['portal_id'])
+        tmp_path, rows, files = _write_export_zip(export_id, ctx)
+        _set_export_progress(
+            export_id,
+            status='ready',
+            rows=rows,
+            files=files,
+            path=tmp_path,
+            filename=f"{ctx['file_stem']}.zip",
+        )
+    except Exception as e:
+        _set_export_progress(export_id, status='failed', error=str(e))
+        print("Export job failed:", traceback.format_exc(), flush=True)
+
+
+@app.route('/export/start', methods=['GET'])
+def export_start():
+    try:
+        export_id = request.args.get('export_id', '').strip()
+        if not export_id:
+            return jsonify({'error': 'export_id is required'}), 400
+        ctx = _export_context(request.args)
+        _set_export_progress(export_id, status='queued', rows=0, files=0, portal_id=ctx['portal_id'])
+        worker = _threading.Thread(target=_run_export_job, args=(export_id, ctx), daemon=True)
+        worker.start()
+        return jsonify({'status': 'queued', 'export_id': export_id})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        _set_export_progress(request.args.get('export_id', '').strip(), status='failed', error=str(e))
+        print("Export start failed:", traceback.format_exc(), flush=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/export/file', methods=['GET'])
+def export_file():
+    export_id = request.args.get('export_id', '').strip()
+    if not export_id:
+        return jsonify({'error': 'export_id is required'}), 400
+    with _export_progress_lock:
+        status = dict(_export_progress.get(export_id, {}))
+    if status.get('status') != 'ready':
+        return jsonify({'error': 'export is not ready', 'status': status.get('status', 'unknown')}), 409
+    path = status.get('path')
+    if not path or not os.path.exists(path):
+        return jsonify({'error': 'export file is missing'}), 404
+
+    response = send_file(
+        path,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name=status.get('filename', f'{export_id}.zip'),
+        max_age=0,
+    )
+
+    @response.call_on_close
+    def cleanup_export_file():
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            _set_export_progress(export_id, status='done')
+        except Exception:
+            pass
+
+    return response
+
+
 @app.route('/export', methods=['GET'])
 def export_data():
     """
@@ -1678,6 +1845,7 @@ def export_status():
         status = dict(_export_progress.get(export_id, {}))
     if not status:
         return jsonify({'status': 'unknown', 'rows': 0, 'files': 0})
+    status.pop('path', None)
     return jsonify(status)
 
 
