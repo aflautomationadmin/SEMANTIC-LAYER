@@ -275,29 +275,9 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
 
   const handleDownload = useCallback(async () => {
     const exportId = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`
-    let pollTimer = null
-    const startPolling = () => {
-      pollTimer = window.setInterval(async () => {
-        try {
-          const r = await fetch(`/permissions-api/export/status?export_id=${encodeURIComponent(exportId)}`)
-          const s = await r.json()
-          if (!r.ok || s.status === 'unknown') return
-          setDlState(prev => prev ? {
-            ...prev,
-            rows: Number(s.rows || 0),
-            files: Number(s.files || 0),
-            serverStatus: s.status,
-          } : prev)
-        } catch {
-          // Progress is best-effort; download failure is handled by the main request.
-        }
-      }, 1000)
-    }
-
     setDlState({ phase: 'preparing', pct: 0, rows: 0, files: 0, serverStatus: 'starting' })
     setError(null)
     try {
-      startPolling()
       const url = buildExportUrl(portal.id, fromDate, toDate, restrictValues, filterValues, FILTER_CONFIG, exportId)
       const startUrl = url.replace('/permissions-api/export?', '/permissions-api/export/start?')
       const startRes = await fetch(startUrl)
@@ -306,14 +286,22 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         throw new Error(err.error || `Server error ${startRes.status}`)
       }
 
+      let lastRows = -1
+      let unchangedPolls = 0
       while (true) {
         await new Promise(resolve => setTimeout(resolve, 1500))
         const statusRes = await fetch(`/permissions-api/export/status?export_id=${encodeURIComponent(exportId)}`)
         const status = await statusRes.json()
         if (!statusRes.ok) throw new Error(status.error || `Server error ${statusRes.status}`)
+        const statusRows = Number(status.rows || 0)
+        if (status.status === 'extracting' || status.status === 'querying') {
+          unchangedPolls = statusRows === lastRows ? unchangedPolls + 1 : 0
+          lastRows = statusRows
+          if (unchangedPolls >= 240) throw new Error('Export progress stopped for several minutes')
+        }
         setDlState(prev => prev ? {
           ...prev,
-          rows: Number(status.rows || 0),
+          rows: statusRows,
           files: Number(status.files || 0),
           serverStatus: status.status,
         } : prev)
@@ -359,8 +347,6 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
     } catch (e) {
       setError(`Download failed: ${e.message}`)
       setDlState(null)
-    } finally {
-      if (pollTimer) window.clearInterval(pollTimer)
     }
   }, [fromDate, toDate, filterValues, portal.id, restrictValues, activeCount])
 
