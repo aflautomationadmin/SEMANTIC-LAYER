@@ -36,9 +36,10 @@ async function fabricLoad(path, body) {
 
 // ── Build export URL ─────────────────────────────────────────────────────
 // fd_ = dropdown IN filter, ft_ = text LIKE filter, restrict_value = row restriction
-function buildExportUrl(portalId, fromDate, toDate, restrictValues, filterValues, filterConfig) {
+function buildExportUrl(portalId, fromDate, toDate, restrictValues, filterValues, filterConfig, exportId = '') {
   const params = new URLSearchParams()
   params.set('portal_id', portalId)
+  if (exportId) params.set('export_id', exportId)
   params.set('from_date',  fromDate)
   params.set('to_date',    toDate)
   if (restrictValues && !Array.isArray(restrictValues) && typeof restrictValues === 'object') {
@@ -232,7 +233,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         else if (type === 'text' && val && val.trim()) textFilters[key] = val.trim()
       })
 
-      const result = await fabricLoad('/data/load', {
+      const dataRequest = fabricLoad('/data/load', {
         portal_id:       portal.id,
         from_date:       fromDate,
         to_date:         toDate,
@@ -242,58 +243,69 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         limit:           50000,
       })
 
+      const countRequest = fabricLoad('/data/load', {
+        portal_id: portal.id,
+        from_date: fromDate,
+        to_date: toDate,
+        filters: dropdownFilters,
+        text_filters: textFilters,
+        restrict_values: restrictValues,
+        count_only: true,
+      })
+
+      const [result, countResult] = await Promise.all([dataRequest, countRequest])
       const data = result.data || []
+      const fullCount = Number(countResult.count ?? data.length)
       setRows(data)
       setLoaded(true)
-      setTotalCount(data.length)
-
-      // Background count query
-      fabricLoad('/data/load', {
-        portal_id: portal.id, from_date: fromDate, to_date: toDate,
-        filters: dropdownFilters, text_filters: textFilters,
-        restrict_values: restrictValues, count_only: true,
+      setTotalCount(fullCount)
+      logEvent(user, 'load_data', {
+        portal_id: portal.id, portal_name: portal.name, from_date: fromDate, to_date: toDate,
+        filter_count: filterCount,
+        row_count: fullCount,
+        total_rows: fullCount,
+        preview_rows: data.length,
+        capped: fullCount > data.length,
+        duration_ms: Date.now() - t0,
       })
-        .then(r => {
-          const fullCount = Number(r.count ?? data.length)
-          if (fullCount > 0) setTotalCount(fullCount)
-          logEvent(user, 'load_data', {
-            portal_id: portal.id, portal_name: portal.name, from_date: fromDate, to_date: toDate,
-            filter_count: filterCount,
-            row_count: fullCount,
-            total_rows: fullCount,
-            preview_rows: data.length,
-            capped: fullCount > data.length,
-            duration_ms: Date.now() - t0,
-          })
-        })
-        .catch(() => {
-          logEvent(user, 'load_data', {
-            portal_id: portal.id, portal_name: portal.name, from_date: fromDate, to_date: toDate,
-            filter_count: filterCount,
-            row_count: data.length,
-            total_rows: data.length,
-            preview_rows: data.length,
-            count_failed: true,
-            duration_ms: Date.now() - t0,
-          })
-        })
 
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }, [fromDate, toDate, filterValues, portal.id, portal.name, restrictValues, hasDateFilter, user])
 
   const handleDownload = useCallback(async () => {
-    setDlState({ phase: 'preparing', pct: 0 })
+    const exportId = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    let pollTimer = null
+    const startPolling = () => {
+      pollTimer = window.setInterval(async () => {
+        try {
+          const r = await fetch(`/permissions-api/export/status?export_id=${encodeURIComponent(exportId)}`)
+          const s = await r.json()
+          if (!r.ok || s.status === 'unknown') return
+          setDlState(prev => prev ? {
+            ...prev,
+            rows: Number(s.rows || 0),
+            files: Number(s.files || 0),
+            serverStatus: s.status,
+          } : prev)
+        } catch {
+          // Progress is best-effort; download failure is handled by the main request.
+        }
+      }, 1000)
+    }
+
+    setDlState({ phase: 'preparing', pct: 0, rows: 0, files: 0, serverStatus: 'starting' })
     setError(null)
     try {
-      const url = buildExportUrl(portal.id, fromDate, toDate, restrictValues, filterValues, FILTER_CONFIG)
+      startPolling()
+      const url = buildExportUrl(portal.id, fromDate, toDate, restrictValues, filterValues, FILTER_CONFIG, exportId)
       const res = await fetch(url)
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         throw new Error(err.error || `Server error ${res.status}`)
       }
 
-      setDlState({ phase: 'downloading', pct: 0 })
+      setDlState(prev => ({ ...(prev || {}), phase: 'downloading', pct: 0 }))
       const contentLength = Number(res.headers.get('content-length') || 0)
       let received = 0
       const reader = res.body.getReader()
@@ -304,10 +316,10 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         chunks.push(value)
         received += value.length
         if (contentLength > 0)
-          setDlState({ phase: 'downloading', pct: Math.round((received / contentLength) * 100) })
+          setDlState(prev => ({ ...(prev || {}), phase: 'downloading', pct: Math.round((received / contentLength) * 100) }))
       }
 
-      setDlState({ phase: 'saving', pct: 100 })
+      setDlState(prev => ({ ...(prev || {}), phase: 'saving', pct: 100 }))
       const blob   = new Blob(chunks, { type: 'application/zip' })
       const objUrl = URL.createObjectURL(blob)
       const a      = document.createElement('a')
@@ -316,7 +328,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
       document.body.appendChild(a); a.click(); document.body.removeChild(a)
       setTimeout(() => URL.revokeObjectURL(objUrl), 2000)
 
-      setDlState({ phase: 'done', pct: 100 })
+      setDlState(prev => ({ ...(prev || {}), phase: 'done', pct: 100 }))
       setTimeout(() => setDlState(null), 1500)
 
       logEvent(user, 'csv_export', {
@@ -325,6 +337,8 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
     } catch (e) {
       setError(`Download failed: ${e.message}`)
       setDlState(null)
+    } finally {
+      if (pollTimer) window.clearInterval(pollTimer)
     }
   }, [fromDate, toDate, filterValues, portal.id, restrictValues, activeCount])
 
@@ -348,6 +362,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
   // Stats bar: show QUANTITY and NETAMT only if present in portal
   const hasQty  = TABLE_COLUMNS.some(c => c.key === 'QUANTITY')
   const hasNet  = TABLE_COLUMNS.some(c => c.key === 'NETAMT')
+  const displayTotalRows = totalCount ?? rows.length
 
   return (
     <div className="app">
@@ -473,9 +488,9 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         {loaded && !loading && (
           <div className="stats-bar">
             <span className="stat">
-              <strong>{(totalCount || rows.length).toLocaleString('en-IN')}</strong> total rows
+              <strong>{displayTotalRows.toLocaleString('en-IN')}</strong> extracted rows
             </span>
-            {(totalCount || rows.length) > rows.length && (
+            {displayTotalRows > rows.length && (
               <><span className="sdot">·</span>
               <span className="stat showing-badge">showing first <strong>{rows.length.toLocaleString('en-IN')}</strong></span></>
             )}
@@ -560,14 +575,14 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
             <div className="dl-bar-body">
               <div className="dl-bar-labels">
                 <span className="dl-bar-phase">
-                  {dlState.phase === 'preparing'   && '⏳ Preparing ZIP on server…'}
+                  {dlState.phase === 'preparing'   && `Preparing ZIP on server... ${Number(dlState.rows || 0).toLocaleString('en-IN')} rows extracted`}
                   {dlState.phase === 'downloading' && (dlState.pct > 0 ? `⬇ Downloading… ${dlState.pct}%` : '⬇ Downloading…')}
                   {dlState.phase === 'saving'      && '💾 Saving file…'}
                   {dlState.phase === 'done'        && '✅ Download complete!'}
                 </span>
                 <span className="dl-bar-hint">
-                  {dlState.phase === 'preparing'   && 'Querying Fabric and building the ZIP — please wait'}
-                  {dlState.phase === 'downloading' && 'Do not close this tab'}
+                  {dlState.phase === 'preparing'   && `${dlState.serverStatus || 'extracting'}${dlState.files ? ` - file part ${dlState.files}` : ''}`}
+                  {dlState.phase === 'downloading' && `${Number(dlState.rows || 0).toLocaleString('en-IN')} rows extracted. Do not close this tab`}
                   {dlState.phase === 'saving'      && 'Check your browser downloads bar'}
                 </span>
               </div>

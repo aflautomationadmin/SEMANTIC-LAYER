@@ -4,15 +4,15 @@ Multi-portal: admins can register any Fabric view as a download portal with
 its own column config and per-user access control.
 Runs on port 5001, proxied by Apache at /permissions-api/
 """
-from flask import Flask, jsonify, request, send_file, make_response
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 import duckdb
 import pyodbc
 import pandas as pd
 import json
 import os
-import io
 import re
+import tempfile
 import traceback
 import zipfile
 from datetime import datetime
@@ -31,6 +31,18 @@ DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'permissions.duc
 import threading as _threading
 _db_lock = _threading.Lock()
 _db_con: "duckdb.DuckDBPyConnection | None" = None
+_export_progress_lock = _threading.Lock()
+_export_progress = {}
+
+
+def _set_export_progress(export_id, **patch):
+    if not export_id:
+        return
+    with _export_progress_lock:
+        current = _export_progress.get(export_id, {})
+        current.update(patch)
+        current['updated_at'] = datetime.utcnow().isoformat()
+        _export_progress[export_id] = current
 
 def get_con() -> "duckdb.DuckDBPyConnection":
     """Return the shared DuckDB connection, opening it if necessary."""
@@ -355,8 +367,12 @@ def _portal_select_sql(config: dict, view_name: str, where: str, limit=None, ord
 def _portal_count_sql(config: dict, view_name: str, where: str) -> str:
     parts = _portal_query_parts(config)
     if parts["dimensions"]:
-        group_sql = ', '.join(parts["dimensions"])
-        return f"SELECT COUNT(*) FROM (SELECT {group_sql} FROM {view_name} WHERE {where} GROUP BY {group_sql}) q"
+        group_by = ', '.join(parts["dimensions"])
+        select_sql = ', '.join(
+            f"{expr} AS {key}"
+            for expr, key in zip(parts["dimensions"], parts["dimension_keys"])
+        )
+        return f"SELECT COUNT(*) FROM (SELECT {select_sql} FROM {view_name} WHERE {where} GROUP BY {group_by}) q"
     if parts["measures"]:
         return "SELECT 1"
     return f"SELECT COUNT(*) FROM {view_name} WHERE {where}"
@@ -1460,6 +1476,7 @@ def data_load():
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
     except Exception as e:
+        print("Data load failed:", traceback.format_exc(), flush=True)
         return jsonify({'error': str(e)}), 500
 
 
@@ -1517,6 +1534,7 @@ def data_values():
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
     except Exception as e:
+        print("Data values failed:", traceback.format_exc(), flush=True)
         return jsonify({'error': str(e)}), 500
 
 
@@ -1529,6 +1547,7 @@ def export_data():
     """
     try:
         portal_id       = request.args.get('portal_id', 'pos-sales')
+        export_id       = request.args.get('export_id', '').strip()
         from_date       = request.args.get('from_date', '').strip()
         to_date         = request.args.get('to_date', '').strip()
         restrict_values = request.args.getlist('restrict_value')
@@ -1563,52 +1582,103 @@ def export_data():
         file_stem = f'{portal_id}_{from_date}_to_{to_date}'
         headers   = _portal_export_headers(config)
         sql       = _portal_select_sql(config, view_name, where)
+        _set_export_progress(export_id, status='starting', rows=0, files=0, portal_id=portal_id)
 
-        conn   = _fab_conn()
-        cursor = conn.cursor()
-        cursor.execute(sql)
+        conn = None
+        tmp_path = None
+        try:
+            conn   = _fab_conn()
+            cursor = conn.cursor()
+            cursor.arraysize = 10_000
+            _set_export_progress(export_id, status='querying', rows=0, files=0)
+            cursor.execute(sql)
+            _set_export_progress(export_id, status='extracting', rows=0, files=1)
 
-        ROWS_PER_FILE = 1_000_000
-        header_line   = (','.join(f'"{h}"' for h in headers) + '\n').encode('utf-8')
+            ROWS_PER_FILE = 1_000_000
+            header_line   = (','.join(f'"{h}"' for h in headers) + '\n').encode('utf-8')
 
-        zip_buf = io.BytesIO()
-        with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED,
-                             compresslevel=6, allowZip64=True) as zf:
-            part, row_count = 1, 0
-            csv_out = zf.open(f'{file_stem}_part{part}.csv', 'w', force_zip64=True)
-            csv_out.write(header_line)
+            with tempfile.NamedTemporaryFile(prefix=f'{portal_id}_', suffix='.zip', delete=False) as tmp:
+                tmp_path = tmp.name
 
-            while True:
-                batch = cursor.fetchmany(10_000)
-                if not batch:
-                    break
-                lines = [
-                    ','.join(f'"{("" if v is None else str(v)).replace(chr(34), chr(34)*2)}"'
-                             for v in row)
-                    for row in batch
-                ]
-                csv_out.write(('\n'.join(lines) + '\n').encode('utf-8'))
-                row_count += len(batch)
-                if row_count >= ROWS_PER_FILE:
-                    csv_out.close()
-                    part += 1; row_count = 0
+            with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED,
+                                 compresslevel=1, allowZip64=True) as zf:
+                part, row_count, total_rows = 1, 0, 0
+                csv_out = None
+                try:
                     csv_out = zf.open(f'{file_stem}_part{part}.csv', 'w', force_zip64=True)
                     csv_out.write(header_line)
 
-            csv_out.close()
+                    while True:
+                        batch = cursor.fetchmany(10_000)
+                        if not batch:
+                            break
+                        lines = [
+                            ','.join(f'"{("" if v is None else str(v)).replace(chr(34), chr(34)*2)}"'
+                                     for v in row)
+                            for row in batch
+                        ]
+                        csv_out.write(('\n'.join(lines) + '\n').encode('utf-8'))
+                        row_count += len(batch)
+                        total_rows += len(batch)
+                        _set_export_progress(export_id, status='extracting', rows=total_rows, files=part)
+                        if row_count >= ROWS_PER_FILE:
+                            csv_out.close()
+                            csv_out = None
+                            part += 1; row_count = 0
+                            _set_export_progress(export_id, status='extracting', rows=total_rows, files=part)
+                            csv_out = zf.open(f'{file_stem}_part{part}.csv', 'w', force_zip64=True)
+                            csv_out.write(header_line)
+                finally:
+                    if csv_out is not None and not csv_out.closed:
+                        csv_out.close()
+        finally:
+            if conn is not None:
+                conn.close()
 
-        conn.close()
-        zip_bytes = zip_buf.getvalue()
-        response  = make_response(zip_bytes)
-        response.headers['Content-Type']        = 'application/zip'
-        response.headers['Content-Disposition'] = f'attachment; filename="{file_stem}.zip"'
-        response.headers['Content-Length']      = str(len(zip_bytes))
+        _set_export_progress(export_id, status='sending', rows=total_rows if 'total_rows' in locals() else 0, files=part if 'part' in locals() else 0)
+
+        response = send_file(
+            tmp_path,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=f'{file_stem}.zip',
+            max_age=0,
+        )
+
+        @response.call_on_close
+        def cleanup_export_file():
+            try:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                _set_export_progress(export_id, status='done')
+            except Exception:
+                pass
+
         return response
 
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
     except Exception as e:
+        try:
+            if 'tmp_path' in locals() and tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        _set_export_progress(export_id if 'export_id' in locals() else '', status='failed', error=str(e))
+        print("Export failed:", traceback.format_exc(), flush=True)
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/export/status', methods=['GET'])
+def export_status():
+    export_id = request.args.get('export_id', '').strip()
+    if not export_id:
+        return jsonify({'error': 'export_id is required'}), 400
+    with _export_progress_lock:
+        status = dict(_export_progress.get(export_id, {}))
+    if not status:
+        return jsonify({'status': 'unknown', 'rows': 0, 'files': 0})
+    return jsonify(status)
 
 
 if __name__ == '__main__':
