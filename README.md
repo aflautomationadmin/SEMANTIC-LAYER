@@ -1,400 +1,411 @@
-# Arvind Analytics — POS Sales Intelligence Platform
+# Arvind Analytics - Semantic Layer and Download Portal
 
-A full-stack semantic layer application for exploring, filtering, and exporting POS / AIL sales data across brands. Built on Microsoft Fabric Warehouse → DuckDB → Cube.js → React.
+This project is a React + Flask application for secure portal-based access to Microsoft Fabric Warehouse data. It supports dynamic data portals, row-level user restrictions, summarized previews, large async ZIP exports, audit logs, and a dedicated FY27 KPI input portal.
 
----
+The deployed application is served at:
 
-## Table of Contents
-
-1. [Architecture Overview](#architecture-overview)
-2. [Project Structure](#project-structure)
-3. [Prerequisites](#prerequisites)
-4. [Environment Variables](#environment-variables)
-5. [Local Development Setup](#local-development-setup)
-6. [Data Sync Scripts](#data-sync-scripts)
-7. [Cube.js Semantic Layer](#cubejs-semantic-layer)
-8. [Frontend](#frontend)
-9. [Authentication & RBAC](#authentication--rbac)
-10. [Permissions API](#permissions-api)
-11. [VM Deployment (Apache2)](#vm-deployment-apache2)
-12. [Git Workflow](#git-workflow)
-13. [Troubleshooting](#troubleshooting)
-
----
-
-## Architecture Overview
-
+```text
+https://automationafl.arvindfashions.com/downloadui
 ```
+
+## Contents
+
+1. Architecture
+2. Project Structure
+3. Runtime Components
+4. Environment Variables
+5. Local Development
+6. Backend API
+7. Portal System
+8. Large Export Flow
+9. FY27 KPI Tracker Portal
+10. Deployment on Ubuntu and Apache2
+11. Operational Checks
+12. Troubleshooting
+
+## Architecture
+
+```text
 Microsoft Fabric Warehouse
-        │
-        │  pyodbc (ODBC Driver 18)
-        ▼
-  Python Sync Scripts
-  (fetch_pos_sales.py)
-        │
-        │  DELETE + INSERT by INVOICENO
-        ▼
-   DuckDB  ──────────────────────────────────────────────────────┐
-   fabric.duckdb                                                  │
-        │                                                         │
-        │  Docker (cubejs/cube:latest)                            │
-        ▼                                                         │
-    Cube.js API  ◄── /cubejs-api/  ◄── Apache Proxy              │
-    port 4000                                                     │
-                                                                  │
-   permissions.duckdb ◄── Flask API ◄── /permissions-api/ ◄──────┘
-   (RBAC storage)         port 5001       Apache Proxy
-        │
-        ▼
-   React Frontend (Vite)
-   served at /downloadui
-   Apache2 on Azure VM
-        │
-        ▼
-   Microsoft MSAL (Azure AD)
-   RBAC: Brand-level access control
+        |
+        | ODBC Driver 18 / pyodbc
+        v
+Flask Permissions API
+sync/permissions_api.py
+        |
+        | stores portal config, access, audit logs
+        v
+data/permissions.duckdb
+
+React / Vite frontend
+frontend/src
+        |
+        | /permissions-api/*
+        v
+Apache2 reverse proxy
+        |
+        v
+https://automationafl.arvindfashions.com/downloadui
 ```
 
----
+The current application queries Fabric directly from the Flask API for portal previews, dropdown values, exports, and KPI insert/read operations. DuckDB is used for local metadata only: portals, access grants, app permissions, and audit logs.
 
 ## Project Structure
 
-```
+```text
 SEMANTIC-LAYER/
-│
-├── data/                          # DuckDB databases (not committed to git)
-│   ├── fabric.duckdb              # POS sales data — used by Cube.js
-│   └── permissions.duckdb         # RBAC permissions — used by Flask API
-│
-├── sync/                          # Python data sync scripts
-│   ├── fetch_pos_sales.py         # Syncs POS/AIL sales from Fabric → DuckDB
-│   ├── fetch_fabric.py            # Syncs SAP billing data (truncate + load)
-│   ├── permissions_api.py         # Flask API for RBAC permissions
-│   └── requirements.txt
-│
-├── model/                         # Cube.js data model
-│   └── cubes/
-│       ├── FactPosAilSales.yml    # 47 dimensions + 15 measures
-│       └── FactSapTSingleIr.yml   # SAP billing cube
-│
-├── frontend/                      # React + Vite application
-│   ├── src/
-│   │   ├── main.jsx               # Entry point — MSAL init
-│   │   ├── App.jsx                # Main dashboard (filters, table, export)
-│   │   ├── App.css
-│   │   ├── AdminPage.jsx          # Admin RBAC management UI
-│   │   ├── AdminPage.css
-│   │   ├── AuthWrapper.jsx        # Microsoft login gate
-│   │   ├── AuthWrapper.css
-│   │   ├── authConfig.js          # MSAL singleton config
-│   │   ├── brandPermissions.js    # RBAC helpers (API calls)
-│   │   └── assets/
-│   │       └── arvind-logo.png
-│   ├── public/
-│   ├── .env                       # Local dev env vars
-│   ├── .env.production            # Production env vars (not committed)
-│   ├── vite.config.js
-│   └── package.json
-│
-├── docker-compose.yml             # Cube.js container
-├── cube.js                        # Cube.js config
-├── .env                           # Root env vars (Fabric credentials etc.)
-├── .gitignore
-└── README.md
+  data/
+    permissions.duckdb              # Runtime metadata DB, not committed
+
+  sync/
+    permissions_api.py              # Flask API: RBAC, portals, Fabric queries, exports, KPI input
+    requirements.txt                # Python dependencies
+
+  frontend/
+    src/
+      App.jsx                       # Main data portal UI and async export flow
+      AdminPage.jsx                 # Portal/admin/access/audit UI
+      PortalHome.jsx                # Portal selector
+      KpiInputPortal.jsx            # FY27 KPI input portal
+      AuthWrapper.jsx               # Microsoft login and access gate
+      brandPermissions.js           # Access helper calls
+      logger.js                     # Audit log helper
+      *.css                         # UI styles
+    vite.config.js                  # Vite config, /permissions-api proxy in local dev
+    package.json
+
+  docs/
+    generate_handover_docx.mjs      # DOCX handover generator
+    generate_doc.mjs
+
+  TECHNICAL_HANDOVER.md
+  Arvind_Analytics_Technical_Handover.docx
+  FY27 KPI Tracker_PVH.xlsx         # Source/reference workbook
+  README.md
 ```
 
----
+## Runtime Components
 
-## Prerequisites
-
-### Local Development (Windows)
-- Node.js 20+
-- Docker Desktop
-- Python 3.10+
-- Microsoft ODBC Driver 18 for SQL Server
-
-### VM (Ubuntu 22.04)
-- Docker + Docker Compose plugin
-- Node.js 20
-- Python 3.10+
-- Apache2
-- Microsoft ODBC Driver 18 for SQL Server
-- unixodbc-dev
-
----
+| Component | Path | Purpose |
+|---|---|---|
+| React frontend | `frontend/src` | Login, portal list, filtering, preview table, export, admin UI, KPI input UI |
+| Flask API | `sync/permissions_api.py` | Portal metadata, user access, audit logs, direct Fabric queries, async export, KPI insert/read |
+| Metadata DB | `data/permissions.duckdb` | App permissions, portals, portal access, audit logs |
+| Fabric Warehouse | Microsoft Fabric | Source data for portals and target table for KPI tracker |
+| Apache2 | Ubuntu VM | TLS, static frontend hosting, reverse proxy to Flask |
 
 ## Environment Variables
 
-### Root `.env` (Cube.js + Python sync)
+Root `.env` is loaded by `sync/permissions_api.py`.
 
 ```env
-# Cube.js
-CUBEJS_DB_TYPE=duckdb
-CUBEJS_DB_DUCKDB_DATABASE_PATH=/cube/conf/data/fabric.duckdb
-CUBEJS_API_SECRET=your_secret_here
-CUBEJS_DEV_MODE=true
-
-# Microsoft Fabric Warehouse (for sync scripts)
-FABRIC_SERVER=your_server.sql.azuresynapse.net
-FABRIC_DATABASE=your_database
-FABRIC_USERNAME=your_username
-FABRIC_PASSWORD=your_password
+CUBEJS_DB_HOST=<fabric-host>
+CUBEJS_DB_PORT=1433
+CUBEJS_DB_NAME=<fabric-warehouse-name>
+CUBEJS_DB_USER=<fabric-user>
+CUBEJS_DB_PASS=<fabric-password>
 ```
 
-### `frontend/.env` (local dev)
+Do not commit `.env`. The repository `.gitignore` excludes it.
 
-```env
-VITE_AZURE_CLIENT_ID=3ce34098-1db7-414e-847f-8ea7b3de5e5d
-VITE_AZURE_TENANT_ID=d6454b9f-4ca2-4392-b62f-20e21e54335a
-VITE_REDIRECT_PATH=
+For large hosted exports, configure the Flask service temp directory through systemd:
+
+```ini
+Environment=TMPDIR=/mnt
 ```
 
-### `frontend/.env.production` (VM only — never committed)
+This makes temporary ZIP files use `/mnt` instead of the default temp location.
+
+Frontend production env:
 
 ```env
-VITE_AZURE_CLIENT_ID=3ce34098-1db7-414e-847f-8ea7b3de5e5d
-VITE_AZURE_TENANT_ID=d6454b9f-4ca2-4392-b62f-20e21e54335a
+VITE_AZURE_CLIENT_ID=<azure-app-client-id>
+VITE_AZURE_TENANT_ID=<azure-tenant-id>
 VITE_REDIRECT_PATH=/downloadui
 ```
 
----
+## Local Development
 
-## Local Development Setup
+### Backend
 
-### 1. Clone the repo
-
-```bash
-git clone https://github.com/YOUR_ORG/arvind-semantic-layer.git
-cd arvind-semantic-layer
+```powershell
+cd C:\Users\7518549\WORK\SEMANTIC-LAYER
+.\.venv\Scripts\activate
+pip install -r sync\requirements.txt
+python sync\permissions_api.py
 ```
 
-### 2. Set up Python environment
+The API runs on:
 
-```bash
-cd sync
-python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # Linux/Mac
-pip install -r requirements.txt
+```text
+http://localhost:5001
 ```
 
-### 3. Start Cube.js
+### Frontend
 
-```bash
-cd ..
-docker compose up -d
-```
-
-Cube.js API available at: `http://localhost:4000`
-
-### 4. Run the Permissions API
-
-```bash
-cd sync
-python permissions_api.py
-```
-
-Permissions API available at: `http://localhost:5001`
-
-### 5. Start the React frontend
-
-```bash
+```powershell
 cd frontend
 npm install
 npm run dev
 ```
 
-Frontend available at: `http://localhost:3000`
+The frontend runs on:
 
----
-
-## Data Sync Scripts
-
-### POS / AIL Sales (`fetch_pos_sales.py`)
-
-Pulls sales data from Microsoft Fabric Warehouse into `data/fabric.duckdb`.
-
-**Strategy:** DELETE + INSERT based on `INVOICENO` — safe to re-run without duplicates.
-
-```bash
-cd sync
-source venv/bin/activate
-python fetch_pos_sales.py
+```text
+http://localhost:3000
 ```
 
-### SAP Billing (`fetch_fabric.py`)
+Vite proxies local `/permissions-api/*` requests to `http://localhost:5001`.
 
-Pulls SAP billing data. **Strategy:** Truncate + full reload every run.
+### Build
 
-```bash
-python fetch_fabric.py
-```
-
-### Scheduling (Cron)
-
-```bash
-crontab -e
-```
-
-```cron
-# Run POS sales sync every day at 2 AM
-0 2 * * * /home/appuser/semantic-layer/env/bin/python /home/appuser/semantic-layer/sync/fetch_pos_sales.py >> /var/log/pos_sync.log 2>&1
-```
-
----
-
-## Cube.js Semantic Layer
-
-- Runs in Docker on port **4000**
-- Uses DuckDB driver pointing to `data/fabric.duckdb`
-- Schema files in `model/cubes/`
-
-### Key Cubes
-
-| Cube | Table | Dimensions | Measures |
-|---|---|---|---|
-| `FactPosAilSales` | `fact_pos_ail_sales` | 47 | 15 |
-| `FactSapTSingleIr` | `fact_sap_t_single_ir` | — | — |
-
-### Restart after schema changes
-
-```bash
-docker compose restart
-```
-
----
-
-## Frontend
-
-Built with **Vite + React 18**.
-
-### Features
-- Date range filter (From / To)
-- 46 categorical filters grouped into 6 tabs (Store, Invoice, Product, Scheme, Tax, Other)
-- Dropdown filters (lazy-loaded from Cube.js) and text search filters
-- Full column table (62 columns) with sort on all columns
-- Pagination (50 rows/page in UI)
-- Row count + summary stats (Qty, Net Amount)
-- CSV export with automatic file splitting at **10 lakh rows per file**
-- Microsoft MSAL authentication
-- Brand-based RBAC (users see only their allowed brands)
-- Admin page for managing user access
-
-### Build for production
-
-```bash
+```powershell
 cd frontend
 npm run build
-# Output → frontend/dist/
 ```
 
----
+Build output:
 
-## Authentication & RBAC
-
-### Microsoft MSAL (Azure AD)
-
-- SPA PKCE flow via `@azure/msal-browser` v3
-- Azure App Registration: `3ce34098-1db7-414e-847f-8ea7b3de5e5d`
-- Redirect URIs configured in Azure Portal:
-  - `http://localhost:3000` (local dev)
-  - `https://automationafl.arvindfashions.com/downloadui` (production)
-
-### Brand RBAC
-
-| Role | Access | How |
-|---|---|---|
-| **Admin** | All brands, Admin page | Listed in `admins[]` in permissions config |
-| **Brand User** | Specific brand(s) only | Listed under `brands.BRAND_NAME[]` |
-| **No Access** | Blocked at login | Not in any list |
-
-Brand filter is **locked** for non-admin users — they cannot override their brand restriction.
-
-### Admin Page
-
-Accessible via the **⚙ Admin** button in the header (admins only).
-
-- **Users tab** — view all users, edit access, remove users, add new users (comma-separated emails supported)
-- **Brands tab** — view users per brand, quick-add users directly to a brand
-
----
-
-## Permissions API
-
-A lightweight Flask API that stores RBAC config in `data/permissions.duckdb`.
-
-### Endpoints
-
-| Method | URL | Description |
-|---|---|---|
-| `GET` | `/permissions-api/permissions` | Get current permissions config |
-| `POST` | `/permissions-api/permissions` | Save updated permissions config |
-
-### Running locally
-
-```bash
-cd sync
-python permissions_api.py
-# Runs on http://localhost:5001
+```text
+frontend/dist
 ```
 
-### Default config (first run)
+## Backend API
+
+Base path in production:
+
+```text
+/permissions-api
+```
+
+Core endpoints:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/permissions` | Read legacy app permission config |
+| `POST` | `/permissions` | Save legacy app permission config |
+| `GET` | `/check-access?email=...` | Check whether a user can access the app |
+| `GET` | `/my-portals?email=...` | Return active portals visible to a user |
+| `GET` | `/portals` | Admin: list portals |
+| `POST` | `/portals` | Admin: create portal |
+| `PUT` | `/portals/<portal_id>` | Admin: update portal |
+| `PATCH` | `/portals/<portal_id>` | Admin: activate/deactivate portal |
+| `DELETE` | `/portals/<portal_id>` | Admin: delete/deactivate portal |
+| `GET` | `/portals/<portal_id>/access` | Admin: list portal users |
+| `POST` | `/portals/<portal_id>/access` | Admin: add/update portal access |
+| `DELETE` | `/portals/<portal_id>/access/<email>` | Admin: remove access |
+| `GET` | `/portals/<portal_id>/restrict-values` | Values for restriction columns |
+| `GET` | `/portals/<portal_id>/discover` | Discover Fabric view columns |
+| `GET` | `/portals/column-values` | Discover values for arbitrary view/column |
+| `POST` | `/data/load` | Portal preview data and count-only queries |
+| `GET` | `/data/values` | Dropdown filter values |
+| `POST` | `/logs` | Write audit log |
+| `GET` | `/logs` | Read audit logs |
+| `DELETE` | `/logs` | Clear audit logs |
+
+## Portal System
+
+Portal metadata is stored in the `portals` table in `data/permissions.duckdb`.
+
+Portal row:
+
+```text
+id
+name
+description
+view_name
+config
+created_at
+is_active
+```
+
+The `config` JSON controls:
+
+- visible columns
+- column labels
+- filters
+- date column
+- restriction columns
+- summary behavior
+- KPI input portal type
+
+### Row-Level Access
+
+Portal user access is stored in `portal_access`.
+
+```text
+portal_id
+email
+restrict_values
+```
+
+`restrict_values` may be:
+
+- legacy array for one restriction column
+- object map for multiple restriction columns
+
+Example:
 
 ```json
 {
-  "admins": ["automation.admin@arvindfashions.com"],
-  "brands": {
-    "US POLO ASS.": ["saifali.khan@arvindfashions.com"],
-    "ARROW": [],
-    "FLYING MACHINE": [],
-    "ASPOL FOOTWEAR": [],
-    "AD BY ARVIND": [],
-    "COMMON BRAND": [],
-    "TOMMY HILFIGER": [],
-    "CALVIN KLEIN": []
-  }
+  "BRAND": ["TOMMY HILFIGER"],
+  "REGION": ["SOUTH"]
 }
 ```
 
----
+### Summarization
 
-## VM Deployment (Apache2)
+Visible columns can be configured as:
 
-### Server Details
+- `group`
+- `sum`
+- `avg`
+- `median`
+- `mode`
 
-| Item | Value |
+Dimension columns are grouped. Measure columns are aggregated. The backend builds SQL dynamically in `_portal_select_sql()` and counts grouped output rows with `_portal_count_sql()`.
+
+## Large Export Flow
+
+Large exports use an async job flow. This is required for hosted use behind Apache because a single long `/export` request can time out while Fabric extraction is still running.
+
+### Endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/export/start?...&export_id=<id>` | Start async export job |
+| `GET` | `/export/status?export_id=<id>` | Poll job status and realtime extracted row count |
+| `GET` | `/export/file?export_id=<id>` | Download completed ZIP file |
+| `GET` | `/export?...` | Legacy synchronous fallback |
+
+### Status Values
+
+| Status | Meaning |
 |---|---|
-| URL | `https://automationafl.arvindfashions.com/downloadui` |
-| OS | Ubuntu 22.04 LTS |
-| Web Server | Apache2 |
-| App User | `appuser` |
-| Project Path | `/home/appuser/semantic-layer/` |
+| `queued` | Job accepted |
+| `starting` | Worker started |
+| `querying` | Fabric query is being executed |
+| `extracting` | Rows are being fetched and written to ZIP |
+| `ready` | ZIP is ready for download |
+| `failed` | Export failed; check `error` |
+| `done` | ZIP was downloaded and cleanup ran |
+| `unknown` | Unknown export id |
 
-### Apache2 Virtual Host Config
+Example status:
 
-Located at `/etc/apache2/sites-available/aflapi.conf`
+```json
+{
+  "status": "extracting",
+  "rows": 1250000,
+  "files": 2,
+  "portal_id": "pos-sales"
+}
+```
 
-Key sections added for this app:
+### Export Behavior
+
+- Each export gets a unique `export_id`.
+- Each export runs in a background thread in the Flask process.
+- Each export opens its own Fabric ODBC connection.
+- Each export writes a temporary ZIP file on disk.
+- CSV parts inside the ZIP are split every `1,000,000` rows.
+- ZIP compression uses low compression for speed.
+- The frontend polls every `1.5s` and shows extracted rows in the status bar.
+- The app does not enforce a hard cap on parallel exports.
+
+### Practical Limits
+
+Even without an app-level cap, parallel exports are still limited by infrastructure:
+
+- Fabric query concurrency
+- ODBC connection limits
+- VM CPU and memory
+- temp disk capacity
+- Apache/systemd limits
+- Python process/thread capacity
+
+For heavy usage, move exports to a persistent worker queue instead of in-process background threads.
+
+## FY27 KPI Tracker Portal
+
+The app includes a dedicated KPI input portal seeded as:
+
+```text
+id: fy27-kpi-tracker-pvh
+name: FY27 KPI Tracker PVH
+view_name: input.FY27_KPI_TRACKER_PVH
+config.type: kpi_input
+```
+
+The portal writes to Fabric table:
+
+```sql
+prd.DIM_UI_KPI_TRACKER_THCK
+```
+
+Expected table columns:
+
+```sql
+KPT_CAT        VARCHAR
+KPI            VARCHAR
+TARGET         FLOAT
+ACTUAL         FLOAT
+BRAND          VARCHAR
+MONTH          VARCHAR
+LOAD_RUN_DATE  VARCHAR
+```
+
+### KPI UI Behavior
+
+- Brand-specific tabs: Tommy Hilfiger and Calvin Klein.
+- Save only updates the currently selected brand.
+- Month selector includes previous, current, and next month in `YYYY_MM` format.
+- Existing table data for the selected month is preloaded into the form.
+- Saving deletes existing rows for the same `MONTH` and selected `BRAND`, then inserts the current form rows.
+- Blank `TARGET` and `ACTUAL` values are inserted as SQL `NULL`.
+- Text fields are cleaned before insert:
+  - uppercased
+  - special characters removed
+  - whitespace normalized
+
+KPI endpoints:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/kpi-template?portal_id=...` | Return KPI template |
+| `GET` | `/kpi-inputs?portal_id=...&period=YYYY_MM` | Load existing KPI values |
+| `POST` | `/kpi-inputs` | Replace/insert KPI values for selected month and brand |
+
+## Deployment on Ubuntu and Apache2
+
+Production app path:
+
+```text
+/home/appuser/semantic-layer
+```
+
+Frontend static path:
+
+```text
+/home/appuser/semantic-layer/frontend/dist
+```
+
+### Apache VirtualHost Snippet
 
 ```apache
-# Redirect root → app
-RedirectMatch ^/$ /downloadui
-
-# Cube.js API proxy
-ProxyPass        /cubejs-api/ http://localhost:4000/cubejs-api/
-ProxyPassReverse /cubejs-api/ http://localhost:4000/cubejs-api/
-ProxyTimeout 300
-
-# Permissions API proxy
-ProxyPass        /permissions-api/ http://localhost:5001/
+# Permissions API
+ProxyTimeout 900
+ProxyPass        /permissions-api/ http://localhost:5001/ timeout=900 connectiontimeout=30 retry=0
 ProxyPassReverse /permissions-api/ http://localhost:5001/
 
-# React frontend
+# POS Download UI
 Alias /downloadui /home/appuser/semantic-layer/frontend/dist
+
 <Directory /home/appuser/semantic-layer/frontend/dist>
     Options FollowSymLinks
     AllowOverride None
     Require all granted
+
     RewriteEngine On
     RewriteBase /downloadui
     RewriteCond %{REQUEST_FILENAME} !-f
@@ -403,35 +414,14 @@ Alias /downloadui /home/appuser/semantic-layer/frontend/dist
 </Directory>
 ```
 
-### Required Apache Modules
+Reload Apache:
 
 ```bash
-sudo a2enmod proxy proxy_http rewrite headers
-sudo systemctl restart apache2
+sudo apachectl configtest
+sudo systemctl reload apache2
 ```
 
-### Systemd Services
-
-**Cube.js** (`/etc/systemd/system/cubejs.service`):
-
-```ini
-[Unit]
-Description=Cube.js Semantic Layer
-After=docker.service
-Requires=docker.service
-
-[Service]
-WorkingDirectory=/home/appuser/semantic-layer
-ExecStart=docker compose up
-ExecStop=docker compose down
-Restart=always
-User=appuser
-
-[Install]
-WantedBy=multi-user.target
-```
-
-**Permissions API** (`/etc/systemd/system/permissions-api.service`):
+### Permissions API systemd Service
 
 ```ini
 [Unit]
@@ -441,6 +431,7 @@ After=network.target
 [Service]
 User=appuser
 WorkingDirectory=/home/appuser/semantic-layer/sync
+Environment=TMPDIR=/mnt
 ExecStart=/home/appuser/semantic-layer/env/bin/python permissions_api.py
 Restart=always
 
@@ -448,176 +439,206 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
+Apply changes:
+
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable cubejs permissions-api
-sudo systemctl start cubejs permissions-api
+sudo systemctl restart permissions-api
 ```
 
-### First-time VM Setup
+### Deploy Steps
 
 ```bash
-# 1. Install system dependencies
-sudo apt update && sudo apt upgrade -y
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker appuser && newgrp docker
-sudo apt install -y docker-compose-plugin nodejs npm unixodbc-dev
+cd /home/appuser/semantic-layer
+git pull
 
-# Install Microsoft ODBC Driver 18
-curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-sudo apt update
-sudo ACCEPT_EULA=Y apt install -y msodbcsql18
-
-# 2. Clone project
-cd ~
-git clone https://github.com/YOUR_ORG/arvind-semantic-layer.git semantic-layer
-cd semantic-layer
-
-# 3. Python environment
-python3 -m venv env
 source env/bin/activate
 pip install -r sync/requirements.txt
 
-# 4. Create .env files (not in git)
-nano .env                           # root env (Fabric credentials)
-nano frontend/.env.production       # frontend env
-
-# 5. Create data folder
-mkdir -p data
-
-# 6. Build frontend
-cd frontend && npm install && npm run build && cd ..
-
-# 7. Start services
-docker compose up -d
-sudo systemctl start permissions-api
-```
-
----
-
-## Git Workflow
-
-### Daily development cycle
-
-```bash
-# On your machine — after making changes
-git add .
-git commit -m "describe your change"
-git push
-
-# On the VM — to deploy
-~/semantic-layer/deploy.sh
-```
-
-### `deploy.sh`
-
-```bash
-#!/bin/bash
-set -e
-echo "── Pulling latest code ──"
-cd ~/semantic-layer
-git pull origin main
-
-echo "── Installing Python deps ──"
-source env/bin/activate
-pip install -r sync/requirements.txt -q
-
-echo "── Building frontend ──"
 cd frontend
-npm install --silent
+npm install
 npm run build
 cd ..
 
-echo "── Restarting services ──"
-docker compose restart
 sudo systemctl restart permissions-api
-
-echo "── Done ✓ ──"
+sudo systemctl reload apache2
 ```
 
-### Files never committed (in `.gitignore`)
+## Operational Checks
 
-| Path | Reason |
-|---|---|
-| `data/` | Database files — too large, server-specific |
-| `.env` | Contains Fabric credentials |
-| `frontend/.env.production` | Contains client IDs |
-| `frontend/node_modules/` | Installed on server |
-| `frontend/dist/` | Built on server |
-| `sync/venv/` or `env/` | Installed on server |
+Service status:
 
----
+```bash
+sudo systemctl status permissions-api
+sudo journalctl -u permissions-api -n 100 --no-pager
+sudo journalctl -u permissions-api -f
+```
+
+Port check:
+
+```bash
+sudo ss -ltnp | grep ':5001'
+```
+
+Disk and memory:
+
+```bash
+df -h
+free -h
+```
+
+Local API checks:
+
+```bash
+curl -i "http://localhost:5001/export/status?export_id=test"
+curl -i "http://localhost:5001/my-portals?email=user@example.com"
+```
+
+Expected unknown export response:
+
+```json
+{"status":"unknown","rows":0,"files":0}
+```
+
+Apache logs:
+
+```bash
+sudo tail -n 100 /var/log/apache2/aflapi_error.log
+sudo tail -n 100 /var/log/apache2/aflapi_access.log
+```
 
 ## Troubleshooting
 
-### Cube.js not starting
+### Hosted export fails but local download works
+
+Check that async endpoints are deployed:
+
 ```bash
-docker compose logs -f cube
-docker compose ps
+curl -i "http://localhost:5001/export/status?export_id=test"
 ```
 
-### Permissions API not starting
+If this fails, restart the API:
+
 ```bash
-journalctl -u permissions-api -n 50 --no-pager
-# Run manually to see error:
-/home/appuser/semantic-layer/env/bin/python /home/appuser/semantic-layer/sync/permissions_api.py
+sudo systemctl restart permissions-api
+sudo journalctl -u permissions-api -n 100 --no-pager
 ```
 
-### Frontend build fails (top-level await error)
-Ensure `vite.config.js` has:
-```js
-build: { target: 'esnext' }
-```
+If localhost works but browser requests fail, check Apache:
 
-### Login redirects to wrong URL (AADSTS50011)
-1. Check `frontend/.env.production` has `VITE_REDIRECT_PATH=/downloadui`
-2. Rebuild frontend: `npm run build`
-3. Confirm `https://automationafl.arvindfashions.com/downloadui` is in Azure App Registration → Authentication → Redirect URIs
-
-### Logo not showing
-Logo must be imported as a module in JSX files — not as a string path:
-```js
-import arvindLogo from './assets/arvind-logo.png'
-// Use:
-<img src={arvindLogo} />
-```
-
-### Apache showing default page
 ```bash
-sudo apache2ctl configtest
+sudo apachectl configtest
 sudo systemctl reload apache2
-# Check dist folder permissions:
-sudo chmod o+x /home/appuser
-sudo chmod -R o+r /home/appuser/semantic-layer/frontend/dist
+sudo tail -n 100 /var/log/apache2/aflapi_error.log
 ```
 
-### pyodbc module not found
+### Export status polls forever
+
+Check status manually:
+
 ```bash
-sudo apt install -y unixodbc-dev
-source ~/semantic-layer/env/bin/activate
-pip install pyodbc
+curl "http://localhost:5001/export/status?export_id=<id>"
 ```
 
-### Docker permission denied
+If status is `failed`, read the `error` field and service logs:
+
 ```bash
-sudo usermod -aG docker appuser
-newgrp docker
+sudo journalctl -u permissions-api -n 200 --no-pager
 ```
 
----
+If status is `querying` for a long time, Fabric is likely still executing the SQL or blocked by warehouse concurrency.
 
-## Tech Stack
+If status is `extracting` and `rows` stops changing, inspect ODBC/Fabric errors in service logs.
 
-| Layer | Technology |
-|---|---|
-| Data Warehouse | Microsoft Fabric Warehouse |
-| Sync | Python 3.10, pyodbc, pandas, DuckDB |
-| Semantic Layer | Cube.js (Docker) |
-| Local DB | DuckDB |
-| Permissions DB | DuckDB (separate file) |
-| Permissions API | Flask 3, flask-cors |
-| Frontend | React 18, Vite 5 |
-| Auth | Microsoft MSAL (@azure/msal-browser v3) |
-| Web Server | Apache2 (Ubuntu 22.04) |
-| Cloud | Microsoft Azure (VM + Fabric + Azure AD) |
+### Browser shows `ERR_CONNECTION_REFUSED`
+
+The Flask service is not reachable through Apache or is not listening on port `5001`.
+
+```bash
+sudo ss -ltnp | grep ':5001'
+sudo systemctl status permissions-api
+curl -i "http://localhost:5001/export/status?export_id=test"
+```
+
+### 502 from Apache
+
+Likely causes:
+
+- backend process stopped
+- proxy timeout
+- long synchronous request
+- API not reachable on port `5001`
+
+Use async export endpoints and make sure Apache has:
+
+```apache
+ProxyTimeout 900
+ProxyPass /permissions-api/ http://localhost:5001/ timeout=900 connectiontimeout=30 retry=0
+```
+
+### Large export disk usage
+
+Exports write ZIP files to the OS temp directory. Configure:
+
+```ini
+Environment=TMPDIR=/mnt
+```
+
+Then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart permissions-api
+```
+
+### KPI values do not appear after save
+
+Check:
+
+```bash
+sudo journalctl -u permissions-api -n 100 --no-pager
+```
+
+Common causes:
+
+- Fabric table missing `ACTUAL`
+- wrong Fabric database in `.env`
+- ODBC connection failure
+- missing INSERT permission on `prd.DIM_UI_KPI_TRACKER_THCK`
+
+### Build fails on server
+
+```bash
+cd /home/appuser/semantic-layer/frontend
+npm install
+npm run build
+```
+
+Confirm `vite.config.js` has:
+
+```js
+base: '/downloadui/'
+```
+
+### Files not to commit
+
+The following are runtime/server-specific and should remain uncommitted:
+
+```text
+.env
+data/
+frontend/node_modules/
+frontend/dist/
+sync/venv/
+env/
+*.log
+```
+
+## Notes for Future Hardening
+
+- Move export jobs to a durable worker queue.
+- Store export job metadata in DuckDB or SQLite instead of process memory.
+- Add scheduled cleanup for abandoned temp ZIP files.
+- Add authentication/authorization checks directly inside export endpoints.
+- Add Fabric query timeout and clearer user-facing failure messages.
+- Add automated backend endpoint tests for portal SQL generation and KPI save/load.
