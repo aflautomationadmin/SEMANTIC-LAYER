@@ -6,7 +6,9 @@ Runs on port 5001, proxied by Apache at /permissions-api/
 """
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
+import csv
 import duckdb
+import io
 import pyodbc
 import pandas as pd
 import json
@@ -33,6 +35,19 @@ _db_lock = _threading.Lock()
 _db_con: "duckdb.DuckDBPyConnection | None" = None
 _export_progress_lock = _threading.Lock()
 _export_progress = {}
+
+
+def _env_int(name: str, default: int, minimum: int) -> int:
+    try:
+        return max(int(os.environ.get(name, default)), minimum)
+    except (TypeError, ValueError):
+        return default
+
+
+EXPORT_FETCH_BATCH_SIZE = _env_int('EXPORT_FETCH_BATCH_SIZE', 50_000, 1_000)
+EXPORT_ROWS_PER_FILE = _env_int('EXPORT_ROWS_PER_FILE', 1_000_000, 10_000)
+EXPORT_ZIP_COMPRESSION = os.environ.get('EXPORT_ZIP_COMPRESSION', 'deflated').strip().lower()
+EXPORT_ZIP_COMPRESSLEVEL = _env_int('EXPORT_ZIP_COMPRESSLEVEL', 1, 0)
 
 
 def _set_export_progress(export_id, **patch):
@@ -1580,55 +1595,71 @@ def _export_context(args):
     }
 
 
+def _zip_settings():
+    if EXPORT_ZIP_COMPRESSION in ('stored', 'none', 'off', 'false', '0'):
+        return {'compression': zipfile.ZIP_STORED}
+    return {
+        'compression': zipfile.ZIP_DEFLATED,
+        'compresslevel': min(EXPORT_ZIP_COMPRESSLEVEL, 9),
+    }
+
+
+def _open_csv_part(zf, ctx, part):
+    raw = zf.open(f"{ctx['file_stem']}_part{part}.csv", 'w', force_zip64=True)
+    text = io.TextIOWrapper(raw, encoding='utf-8', newline='', write_through=False)
+    writer = csv.writer(text, quoting=csv.QUOTE_ALL, lineterminator='\n')
+    writer.writerow(ctx['headers'])
+    return text, writer
+
+
+def _write_cursor_to_zip(cursor, export_id, ctx, tmp_path):
+    total_rows = 0
+    part = 1
+    row_count = 0
+    csv_out = None
+
+    with zipfile.ZipFile(tmp_path, 'w', allowZip64=True, **_zip_settings()) as zf:
+        try:
+            csv_out, writer = _open_csv_part(zf, ctx, part)
+            while True:
+                batch = cursor.fetchmany(EXPORT_FETCH_BATCH_SIZE)
+                if not batch:
+                    break
+
+                writer.writerows(batch)
+                row_count += len(batch)
+                total_rows += len(batch)
+                _set_export_progress(export_id, status='extracting', rows=total_rows, files=part)
+
+                if row_count >= EXPORT_ROWS_PER_FILE:
+                    csv_out.close()
+                    csv_out = None
+                    part += 1
+                    row_count = 0
+                    _set_export_progress(export_id, status='extracting', rows=total_rows, files=part)
+                    csv_out, writer = _open_csv_part(zf, ctx, part)
+        finally:
+            if csv_out is not None and not csv_out.closed:
+                csv_out.close()
+
+    return total_rows, part
+
+
 def _write_export_zip(export_id, ctx):
     conn = None
     tmp_path = None
-    total_rows = 0
-    part = 1
     try:
         conn = _fab_conn()
         cursor = conn.cursor()
-        cursor.arraysize = 10_000
+        cursor.arraysize = EXPORT_FETCH_BATCH_SIZE
         _set_export_progress(export_id, status='querying', rows=0, files=0)
         cursor.execute(ctx['sql'])
         _set_export_progress(export_id, status='extracting', rows=0, files=1)
 
-        rows_per_file = 1_000_000
-        header_line = (','.join(f'"{h}"' for h in ctx['headers']) + '\n').encode('utf-8')
-
         with tempfile.NamedTemporaryFile(prefix=f"{ctx['portal_id']}_", suffix='.zip', delete=False) as tmp:
             tmp_path = tmp.name
 
-        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as zf:
-            row_count = 0
-            csv_out = None
-            try:
-                csv_out = zf.open(f"{ctx['file_stem']}_part{part}.csv", 'w', force_zip64=True)
-                csv_out.write(header_line)
-                while True:
-                    batch = cursor.fetchmany(10_000)
-                    if not batch:
-                        break
-                    lines = [
-                        ','.join(f'"{("" if v is None else str(v)).replace(chr(34), chr(34)*2)}"'
-                                 for v in row)
-                        for row in batch
-                    ]
-                    csv_out.write(('\n'.join(lines) + '\n').encode('utf-8'))
-                    row_count += len(batch)
-                    total_rows += len(batch)
-                    _set_export_progress(export_id, status='extracting', rows=total_rows, files=part)
-                    if row_count >= rows_per_file:
-                        csv_out.close()
-                        csv_out = None
-                        part += 1
-                        row_count = 0
-                        _set_export_progress(export_id, status='extracting', rows=total_rows, files=part)
-                        csv_out = zf.open(f"{ctx['file_stem']}_part{part}.csv", 'w', force_zip64=True)
-                        csv_out.write(header_line)
-            finally:
-                if csv_out is not None and not csv_out.closed:
-                    csv_out.close()
+        total_rows, part = _write_cursor_to_zip(cursor, export_id, ctx, tmp_path)
     finally:
         if conn is not None:
             conn.close()
@@ -1749,58 +1780,14 @@ def export_data():
         file_stem = f'{portal_id}_{from_date}_to_{to_date}'
         headers   = _portal_export_headers(config)
         sql       = _portal_select_sql(config, view_name, where)
+        ctx       = {
+            'portal_id': portal_id,
+            'file_stem': file_stem,
+            'headers': headers,
+            'sql': sql,
+        }
         _set_export_progress(export_id, status='starting', rows=0, files=0, portal_id=portal_id)
-
-        conn = None
-        tmp_path = None
-        try:
-            conn   = _fab_conn()
-            cursor = conn.cursor()
-            cursor.arraysize = 10_000
-            _set_export_progress(export_id, status='querying', rows=0, files=0)
-            cursor.execute(sql)
-            _set_export_progress(export_id, status='extracting', rows=0, files=1)
-
-            ROWS_PER_FILE = 1_000_000
-            header_line   = (','.join(f'"{h}"' for h in headers) + '\n').encode('utf-8')
-
-            with tempfile.NamedTemporaryFile(prefix=f'{portal_id}_', suffix='.zip', delete=False) as tmp:
-                tmp_path = tmp.name
-
-            with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED,
-                                 compresslevel=1, allowZip64=True) as zf:
-                part, row_count, total_rows = 1, 0, 0
-                csv_out = None
-                try:
-                    csv_out = zf.open(f'{file_stem}_part{part}.csv', 'w', force_zip64=True)
-                    csv_out.write(header_line)
-
-                    while True:
-                        batch = cursor.fetchmany(10_000)
-                        if not batch:
-                            break
-                        lines = [
-                            ','.join(f'"{("" if v is None else str(v)).replace(chr(34), chr(34)*2)}"'
-                                     for v in row)
-                            for row in batch
-                        ]
-                        csv_out.write(('\n'.join(lines) + '\n').encode('utf-8'))
-                        row_count += len(batch)
-                        total_rows += len(batch)
-                        _set_export_progress(export_id, status='extracting', rows=total_rows, files=part)
-                        if row_count >= ROWS_PER_FILE:
-                            csv_out.close()
-                            csv_out = None
-                            part += 1; row_count = 0
-                            _set_export_progress(export_id, status='extracting', rows=total_rows, files=part)
-                            csv_out = zf.open(f'{file_stem}_part{part}.csv', 'w', force_zip64=True)
-                            csv_out.write(header_line)
-                finally:
-                    if csv_out is not None and not csv_out.closed:
-                        csv_out.close()
-        finally:
-            if conn is not None:
-                conn.close()
+        tmp_path, total_rows, part = _write_export_zip(export_id, ctx)
 
         _set_export_progress(export_id, status='sending', rows=total_rows if 'total_rows' in locals() else 0, files=part if 'part' in locals() else 0)
 
@@ -1849,6 +1836,8 @@ def export_status():
     return jsonify(status)
 
 
+init_db()
+
+
 if __name__ == '__main__':
-    init_db()
     app.run(host='0.0.0.0', port=5001)

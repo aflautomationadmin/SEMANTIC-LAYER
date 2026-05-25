@@ -112,9 +112,20 @@ For large hosted exports, configure the Flask service temp directory through sys
 
 ```ini
 Environment=TMPDIR=/mnt
+Environment=EXPORT_FETCH_BATCH_SIZE=50000
+Environment=EXPORT_ROWS_PER_FILE=1000000
+Environment=EXPORT_ZIP_COMPRESSION=deflated
+Environment=EXPORT_ZIP_COMPRESSLEVEL=1
 ```
 
 This makes temporary ZIP files use `/mnt` instead of the default temp location.
+
+Export tuning:
+
+- `EXPORT_FETCH_BATCH_SIZE` controls ODBC `fetchmany()` batch size. Use `50000` on the hosted VM to reduce round trips for large exports.
+- `EXPORT_ROWS_PER_FILE` controls how many rows are written into each CSV part inside the ZIP.
+- `EXPORT_ZIP_COMPRESSION=deflated` keeps files smaller and uses compression level `1` for speed.
+- `EXPORT_ZIP_COMPRESSION=stored` disables ZIP compression. Use it only when CPU is the bottleneck and `/mnt` plus network bandwidth can handle larger files.
 
 Frontend production env:
 
@@ -309,7 +320,8 @@ Example status:
 - Each export opens its own Fabric ODBC connection.
 - Each export writes a temporary ZIP file on disk.
 - CSV parts inside the ZIP are split every `1,000,000` rows.
-- ZIP compression uses low compression for speed.
+- ZIP compression is configurable with `EXPORT_ZIP_COMPRESSION` and `EXPORT_ZIP_COMPRESSLEVEL`.
+- CSV writing uses Python's native CSV writer and large ODBC fetch batches to reduce memory churn.
 - The frontend polls every `1.5s` and shows extracted rows in the status bar.
 - The app does not enforce a hard cap on parallel exports.
 
@@ -432,12 +444,18 @@ After=network.target
 User=appuser
 WorkingDirectory=/home/appuser/semantic-layer/sync
 Environment=TMPDIR=/mnt
-ExecStart=/home/appuser/semantic-layer/env/bin/python permissions_api.py
+Environment=EXPORT_FETCH_BATCH_SIZE=50000
+Environment=EXPORT_ROWS_PER_FILE=1000000
+Environment=EXPORT_ZIP_COMPRESSION=deflated
+Environment=EXPORT_ZIP_COMPRESSLEVEL=1
+ExecStart=/home/appuser/semantic-layer/env/bin/gunicorn --workers 1 --threads 16 --timeout 1200 --bind 127.0.0.1:5001 permissions_api:app
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+Use one Gunicorn worker because DuckDB metadata is opened as a single local file. Use threads for concurrent status polling, preview calls, and export downloads.
 
 Apply changes:
 
