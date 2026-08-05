@@ -1,3 +1,4 @@
+
 """
 Permissions API — RBAC config, audit logs, and direct Fabric data endpoints.
 Multi-portal: admins can register any Fabric view as a download portal with
@@ -33,9 +34,9 @@ DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'permissions.duc
 import threading as _threading
 _db_lock = _threading.Lock()
 _db_con: "duckdb.DuckDBPyConnection | None" = None
+
 _export_progress_lock = _threading.Lock()
 _export_progress = {}
-
 
 def _env_int(name: str, default: int, minimum: int) -> int:
     try:
@@ -43,12 +44,10 @@ def _env_int(name: str, default: int, minimum: int) -> int:
     except (TypeError, ValueError):
         return default
 
-
 EXPORT_FETCH_BATCH_SIZE = _env_int('EXPORT_FETCH_BATCH_SIZE', 50_000, 1_000)
 EXPORT_ROWS_PER_FILE = _env_int('EXPORT_ROWS_PER_FILE', 1_000_000, 10_000)
 EXPORT_ZIP_COMPRESSION = os.environ.get('EXPORT_ZIP_COMPRESSION', 'deflated').strip().lower()
 EXPORT_ZIP_COMPRESSLEVEL = _env_int('EXPORT_ZIP_COMPRESSLEVEL', 1, 0)
-
 
 def _set_export_progress(export_id, **patch):
     if not export_id:
@@ -68,13 +67,11 @@ def get_con() -> "duckdb.DuckDBPyConnection":
 
 # ── Fabric Warehouse (SQL Server / ODBC) ──────────────────────────────────
 load_dotenv(Path(__file__).resolve().parent.parent / '.env')
-
 _FAB_HOST = os.environ.get('CUBEJS_DB_HOST', '')
 _FAB_PORT = int(os.environ.get('CUBEJS_DB_PORT', 1433))
 _FAB_DB   = os.environ.get('CUBEJS_DB_NAME', '')
 _FAB_USER = os.environ.get('CUBEJS_DB_USER', '')
 _FAB_PASS = os.environ.get('CUBEJS_DB_PASS', '')
-
 
 def _fab_conn():
     """Open a new ODBC connection to Microsoft Fabric."""
@@ -87,11 +84,9 @@ def _fab_conn():
         timeout=120,
     )
 
-
 def _safe(val: str) -> str:
     """Escape a value for SQL single-quoted string literals."""
     return str(val).replace("'", "''")
-
 
 def _clean_kpi_text(val) -> str:
     """Uppercase text and remove special characters before Fabric insert."""
@@ -99,7 +94,6 @@ def _clean_kpi_text(val) -> str:
     text = text.replace('&', ' AND ')
     text = re.sub(r'[^A-Z0-9 ]+', ' ', text)
     return re.sub(r'\s+', ' ', text).strip()
-
 
 def _target_float(val):
     if val is None:
@@ -113,14 +107,12 @@ def _target_float(val):
     except ValueError:
         return None
 
-
 def _clean_kpi_month(val) -> str:
     text = '' if val is None else str(val).strip().upper()
     match = re.match(r'^(\d{4})[_ -]?(\d{2})$', text)
     if not match:
         return _clean_kpi_text(text)
     return f"{match.group(1)}_{match.group(2)}"
-
 
 def _kpi_insert_sql() -> str:
     return """
@@ -129,14 +121,12 @@ def _kpi_insert_sql() -> str:
         VALUES (?, ?, ?, ?, ?, ?, ?)
     """
 
-
 def _kpi_verify_sql() -> str:
     return """
         SELECT COUNT(*)
         FROM prd.DIM_UI_KPI_TRACKER_THCK
         WHERE LOAD_RUN_DATE = ?
     """
-
 
 def _kpi_existing_sql() -> str:
     return """
@@ -146,14 +136,12 @@ def _kpi_existing_sql() -> str:
         ORDER BY LOAD_RUN_DATE
     """
 
-
 def _kpi_value_key(brand, category, kpi) -> str:
     return '|'.join([
         _clean_kpi_text(brand),
         _clean_kpi_text(category),
         _clean_kpi_text(kpi),
     ])
-
 
 def _kpi_template_key_map() -> dict:
     mapping = {}
@@ -162,7 +150,6 @@ def _kpi_template_key_map() -> dict:
             mapping[_kpi_value_key(sheet.get('brand'), row.get('category'), row.get('kpi'))] = f"{sheet.get('id')}::{idx}"
     return mapping
 
-
 def _format_kpi_number(val) -> str:
     if val is None:
         return ''
@@ -170,14 +157,98 @@ def _format_kpi_number(val) -> str:
         return str(int(val))
     return str(val)
 
-
 def _valid_view_name(view: str) -> bool:
     """Allow only schema.ViewName format to prevent SQL injection."""
     return bool(re.match(r'^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$', view.strip()))
 
+# ── Authorization helpers ──────────────────────────────────────────────────
+# NOTE: previously nothing in this file checked *who* was calling an
+# endpoint — admin-only actions (managing portals/permissions/logs) and
+# portal data access (restrict_values) were entirely trusted from the
+# request body/query string. That let any user who knew the API (not just
+# admins) administer the app, and let any portal-access user see data
+# outside the brand(s)/values they were actually granted, simply by
+# calling the endpoint with different params than the UI would send.
+# Everything below re-derives the caller's real permissions from the DB
+# on every request instead of trusting client-supplied values.
+class PermissionDenied(Exception):
+    """Raised when the requesting email isn't allowed to do something."""
+    pass
+
+def _request_email() -> str:
+    """Best-effort email extraction: query string first, then JSON body."""
+    email = request.args.get('email', '')
+    if not email:
+        body = request.get_json(silent=True) or {}
+        email = body.get('email', '')
+    return (email or '').strip().lower()
+
+def _is_admin_email(email: str) -> bool:
+    email = (email or '').strip().lower()
+    if not email:
+        return False
+    with _db_lock:
+        row = get_con().execute("SELECT config FROM app_permissions WHERE id=1").fetchone()
+    cfg = json.loads(row[0]) if row else DEFAULT_CONFIG
+    return any(a.lower() == email for a in cfg.get('admins', []))
+
+def admin_required(view):
+    """Route decorator: 403s unless the caller's email is a configured admin."""
+    from functools import wraps
+
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        email = _request_email()
+        if not email:
+            return jsonify({"error": "email is required"}), 400
+        if not _is_admin_email(email):
+            return jsonify({"error": "admin access required"}), 403
+        return view(*args, **kwargs)
+    return wrapped
+
+def _require_portal_access(portal_id: str, email: str) -> None:
+    """Raise PermissionDenied unless email is an admin or has an explicit
+    portal_access grant for portal_id. Used by non-data-preview endpoints
+    (e.g. KPI input forms) that still need per-portal gating."""
+    email = (email or '').strip().lower()
+    if not email:
+        raise PermissionDenied('email is required')
+    if _is_admin_email(email):
+        return
+    with _db_lock:
+        row = get_con().execute(
+            "SELECT 1 FROM portal_access WHERE portal_id=? AND LOWER(email)=?",
+            [portal_id, email]
+        ).fetchone()
+    if not row:
+        raise PermissionDenied(f'{email} does not have access to portal {portal_id}')
+
+def _resolve_portal_restrictions(config: dict, portal_id: str, email: str) -> dict:
+    """
+    Server-side source of truth for a user's row-level restriction on a
+    portal. Admins get no restriction (full access); everyone else gets
+    exactly what's stored in portal_access for their email — any
+    restrict_values the client sent in the request are ignored entirely,
+    so a restricted user can no longer widen (or drop) their own filter
+    by editing the request.
+    Raises PermissionDenied if the email has no access to this portal.
+    """
+    email = (email or '').strip().lower()
+    if not email:
+        raise PermissionDenied('email is required')
+    if _is_admin_email(email):
+        return {}
+    with _db_lock:
+        row = get_con().execute(
+            "SELECT restrict_values FROM portal_access WHERE portal_id=? AND LOWER(email)=?",
+            [portal_id, email]
+        ).fetchone()
+    if not row:
+        raise PermissionDenied(f'{email} does not have access to portal {portal_id}')
+    stored_values = json.loads(row[0]) if row[0] else []
+    return _normalize_restrictions(config, stored_values)
 
 # ── Portal config helpers ─────────────────────────────────────────────────
-
 def _load_portal(portal_id: str) -> dict:
     """Load a portal row from DB. Raises ValueError if not found."""
     with _db_lock:
@@ -195,7 +266,6 @@ def _load_portal(portal_id: str) -> dict:
         "config":      json.loads(row[4]),
     }
 
-
 def _portal_allowed_cols(config: dict) -> set:
     """Build the SQL-injection whitelist from portal column config."""
     cols = {c['key'].upper() for c in config.get('columns', [])}
@@ -205,11 +275,9 @@ def _portal_allowed_cols(config: dict) -> set:
         cols.add(c)
     return cols
 
-
 def _portal_visible_cols(config: dict) -> list:
     """Columns selected for the final portal output."""
     return [c for c in config.get('columns', []) if c.get('show')]
-
 
 def _portal_restrict_cols(config: dict) -> list:
     """Return configured row-restriction columns, preserving legacy restrict_col."""
@@ -217,7 +285,6 @@ def _portal_restrict_cols(config: dict) -> list:
     if not cols and config.get('restrict_col'):
         cols = [config.get('restrict_col')]
     return [str(c).strip().upper() for c in (cols or []) if str(c).strip()]
-
 
 def _normalize_restrictions(config: dict, restrict_values) -> dict:
     """Normalize legacy list restrictions and new {column: values[]} restrictions."""
@@ -233,12 +300,10 @@ def _normalize_restrictions(config: dict, restrict_values) -> dict:
         return {restrict_cols[0]: vals} if vals else {}
     return {}
 
-
 def _is_measure_col(col: dict) -> bool:
     """Measures are summarized; dimensions are grouped."""
     agg = (col.get('aggregate') or '').lower()
     return bool(agg in ('sum', 'avg', 'median', 'mode') or col.get('currency') or col.get('is_numeric'))
-
 
 def _aggregate_for_col(col: dict) -> str:
     agg = (col.get('aggregate') or '').lower()
@@ -246,17 +311,14 @@ def _aggregate_for_col(col: dict) -> str:
         return agg
     return 'sum' if col.get('currency') or col.get('is_numeric') else 'group'
 
-
 def _col_expr(key: str, date_col: str) -> str:
     key = key.upper()
     return f'CAST({key} AS DATE)' if date_col and key == date_col.upper() else key
-
 
 def _portal_query_parts(config: dict):
     """Build grouped SELECT metadata from the visible portal columns."""
     date_col = (config.get('date_col') or '').upper()
     dimensions, dimension_keys, measures, select_parts, headers, output = [], [], [], [], [], []
-
     for c in _portal_visible_cols(config):
         key = c['key'].upper()
         label = c.get('label') or key
@@ -277,7 +339,6 @@ def _portal_query_parts(config: dict):
             dimension_keys.append(key)
             output.append({"type": "dimension", "key": key})
             select_parts.append(f'{expr} AS {key}')
-
     return {
         "select": select_parts,
         "dimensions": dimensions,
@@ -287,12 +348,10 @@ def _portal_query_parts(config: dict):
         "headers": headers,
     }
 
-
 def _join_on_dims(left_alias: str, right_alias: str, dim_keys: list) -> str:
     if not dim_keys:
         return "1=1"
     return " AND ".join(f"{left_alias}.{k} = {right_alias}.{k}" for k in dim_keys)
-
 
 def _portal_select_sql(config: dict, view_name: str, where: str, limit=None, order=True) -> str:
     """Build summarized SELECT SQL for preview/export."""
@@ -301,16 +360,13 @@ def _portal_select_sql(config: dict, view_name: str, where: str, limit=None, ord
     dim_keys = parts["dimension_keys"]
     measures = parts["measures"]
     top = f"TOP {limit} " if limit else ""
-
     if not parts["select"]:
         raise ValueError("No visible columns configured")
-
     # Dimension-only portals return distinct dimension rows.
     if dim_exprs and not measures:
         cols_sql = ', '.join(parts["select"])
         order_sql = f" ORDER BY {dim_exprs[0]}" if order else ""
         return f"SELECT DISTINCT {top}{cols_sql} FROM {view_name} WHERE {where}{order_sql}"
-
     # Simple aggregate path for SUM/AVG only.
     simple_aggs = {'sum': 'SUM', 'avg': 'AVG'}
     if measures and all(m["aggregate"] in simple_aggs for m in measures):
@@ -324,7 +380,6 @@ def _portal_select_sql(config: dict, view_name: str, where: str, limit=None, ord
         order_col = dim_exprs[0] if dim_exprs else "1"
         order_sql = f" ORDER BY {order_col}" if order else ""
         return f"SELECT {top}{cols_sql} FROM {view_name} WHERE {where}{group_by}{order_sql}"
-
     # Window/CTE path for MEDIAN and MODE.
     base_cols = [f"{expr} AS {key}" for expr, key in zip(dim_exprs, dim_keys)]
     base_cols += [f"TRY_CAST({m['key']} AS FLOAT) AS {m['key']}" for m in measures]
@@ -333,7 +388,6 @@ def _portal_select_sql(config: dict, view_name: str, where: str, limit=None, ord
         ctes.append(f"groups AS (SELECT {', '.join(dim_keys)} FROM base GROUP BY {', '.join(dim_keys)})")
     else:
         ctes.append("groups AS (SELECT 1 AS __ONE)")
-
     joins = []
     grouped_aggs = [m for m in measures if m["aggregate"] in ('sum', 'avg')]
     if grouped_aggs:
@@ -344,7 +398,6 @@ def _portal_select_sql(config: dict, view_name: str, where: str, limit=None, ord
         joins.append(f"LEFT JOIN agg a ON {_join_on_dims('g', 'a', dim_keys)}")
     final_select_by_key = {k: f"g.{k}" for k in dim_keys}
     final_select_by_key.update({m["key"]: f"a.{m['key']}" for m in grouped_aggs})
-
     for m in measures:
         key = m["key"]
         if m["aggregate"] == "median":
@@ -372,12 +425,10 @@ def _portal_select_sql(config: dict, view_name: str, where: str, limit=None, ord
             )
             joins.append(f"LEFT JOIN mode_{key} mode_{key} ON {_join_on_dims('g', f'mode_{key}', dim_keys)}")
             final_select_by_key[key] = f"mode_{key}.{key}"
-
     order_col = f"g.{dim_keys[0]}" if dim_keys else "1"
     order_sql = f" ORDER BY {order_col}" if order else ""
     final_select = [final_select_by_key[c["key"]] for c in parts["output"]]
     return f"WITH {', '.join(ctes)} SELECT {top}{', '.join(final_select)} FROM groups g {' '.join(joins)}{order_sql}"
-
 
 def _portal_count_sql(config: dict, view_name: str, where: str) -> str:
     parts = _portal_query_parts(config)
@@ -392,11 +443,9 @@ def _portal_count_sql(config: dict, view_name: str, where: str) -> str:
         return "SELECT 1"
     return f"SELECT COUNT(*) FROM {view_name} WHERE {where}"
 
-
 def _portal_export_headers(config: dict) -> list:
     """Friendly CSV header names from portal column config."""
     return _portal_query_parts(config)["headers"]
-
 
 def _build_where(from_date, to_date, filters, text_filters,
                  restrict_cols, restrict_values, date_col, allowed_cols):
@@ -408,10 +457,8 @@ def _build_where(from_date, to_date, filters, text_filters,
             f"CAST({date_col} AS DATE) >= '{_safe(from_date)}'",
             f"CAST({date_col} AS DATE) <= '{_safe(to_date)}'",
         ])
-
     restrict_cols = [c.upper() for c in (restrict_cols or [])]
     restrict_map = restrict_values if isinstance(restrict_values, dict) else {}
-
     # Row-level restrictions (e.g. BRAND + REGION)
     for col, values in restrict_map.items():
         col = col.upper()
@@ -419,7 +466,6 @@ def _build_where(from_date, to_date, filters, text_filters,
             continue
         q = ', '.join(f"N'{_safe(v)}'" for v in values)
         conds.append(f'{col} IN ({q})')
-
     # Dropdown / multi-select filters (fd_ prefix from frontend)
     for col, values in (filters or {}).items():
         col = col.upper()
@@ -437,7 +483,6 @@ def _build_where(from_date, to_date, filters, text_filters,
             parts.append(f"({col} IS NULL OR CAST({col} AS NVARCHAR(MAX)) = N'')")
         if parts:
             conds.append('(' + ' OR '.join(parts) + ')')
-
     # Text / contains filters (ft_ prefix from frontend)
     for col, val in (text_filters or {}).items():
         col = col.upper()
@@ -446,9 +491,7 @@ def _build_where(from_date, to_date, filters, text_filters,
         conds.append(
             f"LOWER(CAST({col} AS NVARCHAR(MAX))) LIKE N'%{_safe(str(val).lower())}%'"
         )
-
     return ' AND '.join(conds) if conds else '1=1'
-
 
 # ── POS Sales default portal config (migration seed) ─────────────────────
 POS_SALES_DEFAULT_CONFIG = {
@@ -665,17 +708,12 @@ FY27_KPI_TRACKER_PVH_TEMPLATE = [
         "rows": [],
     },
 ]
-
 FY27_KPI_TRACKER_PVH_TEMPLATE[2]["rows"] = [dict(r) for r in FY27_KPI_TRACKER_PVH_TEMPLATE[0]["rows"]]
 FY27_KPI_TRACKER_PVH_TEMPLATE[3]["rows"] = [dict(r) for r in FY27_KPI_TRACKER_PVH_TEMPLATE[1]["rows"]]
 
-
 # get_con() defined above as a singleton
-
-
 def init_db():
     con = get_con()
-
     # ── Permissions table ──────────────────────────────────────────────
     con.execute("""
         CREATE TABLE IF NOT EXISTS app_permissions (
@@ -787,13 +825,11 @@ def init_db():
                 True,
             ]
         )
-
     # singleton — do not close
 
-
 # ── Permissions endpoints ─────────────────────────────────────────────────
-
 @app.route('/permissions', methods=['GET'])
+@admin_required
 def get_permissions():
     try:
         with _db_lock:
@@ -802,7 +838,6 @@ def get_permissions():
         return jsonify(json.loads(row[0]) if row else DEFAULT_CONFIG)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 @app.route('/check-access', methods=['GET'])
 def check_access():
@@ -818,24 +853,19 @@ def check_access():
         email = request.args.get('email', '').strip().lower()
         if not email:
             return jsonify({"allowed": False}), 400
-
         with _db_lock:
             con = get_con()
-
             # Load legacy app_permissions config
             row = con.execute("SELECT config FROM app_permissions WHERE id=1").fetchone()
             cfg = json.loads(row[0]) if row else DEFAULT_CONFIG
-
             # 1. Admin check
             if any(a.lower() == email for a in cfg.get('admins', [])):
                 return jsonify({"allowed": True, "is_admin": True, "brands": []})
-
             # 2. Legacy brand check
             brands = [b for b, users in cfg.get('brands', {}).items()
                       if any(u.lower() == email for u in users)]
             if brands:
                 return jsonify({"allowed": True, "is_admin": False, "brands": brands})
-
             # 3. Portal access check
             hit = con.execute("""
                 SELECT 1 FROM portal_access pa
@@ -845,13 +875,12 @@ def check_access():
             """, [email]).fetchone()
             if hit:
                 return jsonify({"allowed": True, "is_admin": False, "brands": []})
-
         return jsonify({"allowed": False})
     except Exception as e:
         return jsonify({"error": str(e), "allowed": False}), 500
 
-
 @app.route('/permissions', methods=['POST'])
+@admin_required
 def save_permissions():
     try:
         config = request.get_json()
@@ -864,9 +893,7 @@ def save_permissions():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 # ── Audit log endpoints ───────────────────────────────────────────────────
-
 @app.route('/logs', methods=['POST'])
 def insert_log():
     try:
@@ -886,8 +913,8 @@ def insert_log():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/logs', methods=['GET'])
+@admin_required
 def get_logs():
     try:
         limit     = int(request.args.get('limit', 200))
@@ -896,7 +923,6 @@ def get_logs():
         email     = request.args.get('email', '')
         from_date = request.args.get('from_date', '')
         to_date   = request.args.get('to_date', '')
-
         conditions, params = [], []
         if action:
             conditions.append("action=?"); params.append(action)
@@ -906,7 +932,6 @@ def get_logs():
             conditions.append("ts>=?"); params.append(from_date + ' 00:00:00')
         if to_date:
             conditions.append("ts<=?"); params.append(to_date + ' 23:59:59')
-
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         with _db_lock:
             con   = get_con()
@@ -916,7 +941,6 @@ def get_logs():
                 f"ORDER BY ts DESC LIMIT ? OFFSET ?",
                 params + [limit, offset]
             ).fetchall()
-
         logs = [{
             "id": r[0], "ts": str(r[1]), "email": r[2], "name": r[3],
             "action": r[4], "details": json.loads(r[5]) if r[5] else {},
@@ -925,8 +949,8 @@ def get_logs():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/logs', methods=['DELETE'])
+@admin_required
 def clear_logs():
     try:
         with _db_lock:
@@ -935,14 +959,13 @@ def clear_logs():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 # ── Portal CRUD endpoints ─────────────────────────────────────────────────
-
 @app.route('/kpi-template', methods=['GET'])
 def get_kpi_template():
     """Return the FY27 KPI Tracker PVH input template."""
     try:
         portal_id = request.args.get('portal_id', 'fy27-kpi-tracker-pvh')
+        _require_portal_access(portal_id, request.args.get('email', ''))
         portal = _load_portal(portal_id)
         if (portal.get('config') or {}).get('type') != 'kpi_input':
             return jsonify({"error": "Portal is not a KPI input portal"}), 400
@@ -951,30 +974,28 @@ def get_kpi_template():
             "source_file": portal['config'].get('source_file'),
             "sheets": FY27_KPI_TRACKER_PVH_TEMPLATE,
         })
+    except PermissionDenied as e:
+        return jsonify({"error": str(e)}), 403
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 @app.route('/kpi-inputs', methods=['GET'])
 def get_kpi_inputs():
     """Return existing KPI targets for a month, keyed by template row."""
     try:
         portal_id = request.args.get('portal_id', 'fy27-kpi-tracker-pvh')
+        _require_portal_access(portal_id, request.args.get('email', ''))
         period = _clean_kpi_month(request.args.get('period', ''))
-
         if not period:
             return jsonify({"error": "period is required"}), 400
-
         portal = _load_portal(portal_id)
         if (portal.get('config') or {}).get('type') != 'kpi_input':
             return jsonify({"error": "Portal is not a KPI input portal"}), 400
-
         key_map = _kpi_template_key_map()
         values = {}
         rows_loaded = 0
-
         conn = None
         try:
             conn = _fab_conn()
@@ -991,7 +1012,6 @@ def get_kpi_inputs():
         finally:
             if conn is not None:
                 conn.close()
-
         return jsonify({
             "status": "ok",
             "period": period,
@@ -999,6 +1019,8 @@ def get_kpi_inputs():
             "rows_loaded": rows_loaded,
             "table": "prd.DIM_UI_KPI_TRACKER_THCK",
         })
+    except PermissionDenied as e:
+        return jsonify({"error": str(e)}), 403
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     except Exception as e:
@@ -1009,25 +1031,22 @@ def get_kpi_inputs():
             "hint": "Could not read existing KPI targets from Fabric for the selected month.",
         }), 500
 
-
 @app.route('/kpi-inputs', methods=['POST'])
 def save_kpi_inputs():
     """Persist KPI input rows entered through an input portal."""
     try:
         body = request.get_json() or {}
         portal_id = body.get('portal_id', 'fy27-kpi-tracker-pvh')
+        _require_portal_access(portal_id, body.get('email', ''))
         period = str(body.get('period', '')).strip()
         entries = body.get('entries') or []
-
         if not period:
             return jsonify({"error": "period is required"}), 400
         if not entries:
             return jsonify({"error": "entries are required"}), 400
-
         portal = _load_portal(portal_id)
         if (portal.get('config') or {}).get('type') != 'kpi_input':
             return jsonify({"error": "Portal is not a KPI input portal"}), 400
-
         load_run_date = datetime.utcnow().strftime('%Y%m%d%H%M%S')
         rows = []
         null_targets = 0
@@ -1048,14 +1067,11 @@ def save_kpi_inputs():
                 _clean_kpi_month(period),
                 _clean_kpi_text(load_run_date),
             ])
-
         if not rows:
             return jsonify({"error": "No KPI rows to save"}), 400
-
         brands = sorted({row[4] for row in rows if row[4]})
         if not brands:
             return jsonify({"error": "No brands found in KPI rows"}), 400
-
         conn = None
         try:
             conn = _fab_conn()
@@ -1083,7 +1099,6 @@ def save_kpi_inputs():
         finally:
             if conn is not None:
                 conn.close()
-
         return jsonify({
             "status": "ok",
             "saved": len(rows),
@@ -1093,6 +1108,8 @@ def save_kpi_inputs():
             "verified": verified,
             "table": "prd.DIM_UI_KPI_TRACKER_THCK",
         })
+    except PermissionDenied as e:
+        return jsonify({"error": str(e)}), 403
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     except Exception as e:
@@ -1102,7 +1119,6 @@ def save_kpi_inputs():
             "table": "prd.DIM_UI_KPI_TRACKER_THCK",
             "hint": "Check Fabric schema/table name, INSERT permission, ODBC credentials, and that CUBEJS_DB_NAME points to the warehouse containing the table.",
         }), 500
-
 
 def _sync_portal_access(con, portal_id, access_list):
     """Replace all portal_access rows for portal_id with the given list."""
@@ -1116,8 +1132,8 @@ def _sync_portal_access(con, portal_id, access_list):
                 [portal_id, email, json.dumps(values)]
             )
 
-
 @app.route('/portals/column-values', methods=['GET'])
+@admin_required
 def portal_column_values():
     """Get distinct values for any column in any Fabric view.
     Used by the portal wizard before a portal_id exists.
@@ -1143,8 +1159,8 @@ def portal_column_values():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/portals', methods=['GET'])
+@admin_required
 def list_portals():
     """List all portals (admin use)."""
     try:
@@ -1171,8 +1187,8 @@ def list_portals():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/portals', methods=['POST'])
+@admin_required
 def create_portal():
     """Create a new portal."""
     try:
@@ -1182,14 +1198,12 @@ def create_portal():
             return jsonify({"error": "name and view_name are required"}), 400
         if not _valid_view_name(body['view_name']):
             return jsonify({"error": "view_name must be schema.ViewName format"}), 400
-
         # Auto-generate slug from name if not provided
         pid = body.get('id', '').strip().lower().replace(' ', '-')
         if not pid:
             pid = re.sub(r'[^a-z0-9-]', '', name.lower().replace(' ', '-'))
         if not pid:
             pid = 'portal-' + datetime.utcnow().strftime('%Y%m%d%H%M%S')
-
         now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
         with _db_lock:
             con = get_con()
@@ -1208,8 +1222,8 @@ def create_portal():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/portals/<portal_id>', methods=['PUT', 'PATCH'])
+@admin_required
 def update_portal(portal_id):
     """Update portal fields.
     PUT  — full update (name, description, view_name, config).
@@ -1240,8 +1254,8 @@ def update_portal(portal_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/portals/<portal_id>', methods=['DELETE'])
+@admin_required
 def delete_portal(portal_id):
     """Delete a portal.
     ?permanent=true  — hard-delete the row + all portal_access rows.
@@ -1260,8 +1274,8 @@ def delete_portal(portal_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/portals/<portal_id>/restrict-values', methods=['GET'])
+@admin_required
 def portal_restrict_values(portal_id):
     """Return distinct values for configured restriction columns."""
     try:
@@ -1273,7 +1287,6 @@ def portal_restrict_values(portal_id):
             restrict_cols = [c for c in restrict_cols if c == requested_col]
         if not restrict_cols:
             return jsonify({"values": [], "values_by_column": {}, "columns": []})
-
         view_name = portal['view_name']
         conn = _fab_conn()
         values_by_column = {}
@@ -1297,15 +1310,14 @@ def portal_restrict_values(portal_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/portals/<portal_id>/discover', methods=['GET'])
+@admin_required
 def discover_columns(portal_id):
     """Auto-detect columns from a Fabric view."""
     try:
         view = request.args.get('view', '').strip()
         if not view or not _valid_view_name(view):
             return jsonify({"error": "view must be schema.ViewName format"}), 400
-
         NUMERIC_TYPES = {-7, -6, -5, 2, 3, 4, 5, 6, 7, 8}  # pyodbc SQL type codes for numeric
         conn   = _fab_conn()
         cursor = conn.cursor()
@@ -1326,7 +1338,6 @@ def discover_columns(portal_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/my-portals', methods=['GET'])
 def my_portals():
     """Return portals accessible to a user (admins get all)."""
@@ -1334,15 +1345,12 @@ def my_portals():
         email = request.args.get('email', '').strip().lower()
         if not email:
             return jsonify({"error": "email required"}), 400
-
         with _db_lock:
             con = get_con()
-
             # Check if admin
             row = con.execute("SELECT config FROM app_permissions WHERE id=1").fetchone()
             cfg = json.loads(row[0]) if row else DEFAULT_CONFIG
             is_admin = any(a.lower() == email for a in cfg.get('admins', []))
-
             if is_admin:
                 rows = con.execute(
                     "SELECT id, name, description, view_name, config FROM portals WHERE is_active=TRUE ORDER BY created_at"
@@ -1367,13 +1375,12 @@ def my_portals():
                     "restrict_values": json.loads(r[5]) if r[5] else [],
                     "is_admin": False,
                 } for r in rows]
-
         return jsonify({"portals": portals})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/portals/<portal_id>/access', methods=['GET'])
+@admin_required
 def get_portal_access(portal_id):
     """List all users with access to a portal."""
     try:
@@ -1389,8 +1396,8 @@ def get_portal_access(portal_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/portals/<portal_id>/access', methods=['POST'])
+@admin_required
 def set_portal_access(portal_id):
     """Add or update a user's access to a portal."""
     try:
@@ -1399,7 +1406,6 @@ def set_portal_access(portal_id):
         values = body.get('restrict_values', [])
         if not email:
             return jsonify({"error": "email required"}), 400
-
         with _db_lock:
             con = get_con()
             existing = con.execute(
@@ -1420,8 +1426,8 @@ def set_portal_access(portal_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/portals/<portal_id>/access/<path:email>', methods=['DELETE'])
+@admin_required
 def remove_portal_access(portal_id, email):
     """Remove a user from a portal."""
     try:
@@ -1434,15 +1440,17 @@ def remove_portal_access(portal_id, email):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 # ── Fabric data endpoints (portal-aware) ──────────────────────────────────
-
 @app.route('/data/load', methods=['POST'])
 def data_load():
     """
     Preview — returns up to 50 000 rows from a portal's Fabric view.
-    Body: { portal_id, from_date, to_date, filters, text_filters,
-            restrict_values, limit, count_only }
+    Body: { portal_id, email, from_date, to_date, filters, text_filters,
+            limit, count_only }
+    `email` identifies the caller and is required — their row-level
+    restriction is looked up server-side from portal_access (or waived
+    entirely if they're an admin); any restrict_values in the body are
+    ignored.
     """
     try:
         body            = request.get_json() or {}
@@ -1451,10 +1459,8 @@ def data_load():
         to_date         = body.get('to_date', '')
         filters         = body.get('filters', {})
         text_filters    = body.get('text_filters', {})
-        restrict_values = body.get('restrict_values', [])
         limit           = min(int(body.get('limit', 50_000)), 100_000)
         count_only      = body.get('count_only', False)
-
         portal      = _load_portal(portal_id)
         config      = portal['config']
         view_name   = portal['view_name']
@@ -1462,72 +1468,63 @@ def data_load():
         if date_col and (not from_date or not to_date):
             return jsonify({'error': 'from_date and to_date required'}), 400
         restrict_cols = _portal_restrict_cols(config)
-        restrict_map = _normalize_restrictions(config, restrict_values)
+        # restrict_map is derived server-side from the caller's email — a
+        # client-supplied restrict_values would let a brand-restricted user
+        # widen (or drop) their own filter just by editing the request.
+        restrict_map = _resolve_portal_restrictions(config, portal_id, body.get('email', ''))
         allowed_cols = _portal_allowed_cols(config)
-
         where = _build_where(
             from_date, to_date, filters, text_filters,
             restrict_cols, restrict_map, date_col, allowed_cols
         )
         conn = _fab_conn()
-
         if count_only:
             row = conn.execute(_portal_count_sql(config, view_name, where)).fetchone()
             conn.close()
             return jsonify({'count': row[0]})
-
         sql = _portal_select_sql(config, view_name, where, limit=limit)
-
         df = pd.read_sql(sql, conn)
         conn.close()
-
         date_col_upper = (date_col or '').upper()
         if date_col_upper and date_col_upper in df.columns:
             df[date_col_upper] = df[date_col_upper].astype(str)
         df = df.fillna('')
-
         return jsonify({'data': df.to_dict('records')})
-
+    except PermissionDenied as e:
+        return jsonify({'error': str(e)}), 403
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
     except Exception as e:
         print("Data load failed:", traceback.format_exc(), flush=True)
         return jsonify({'error': str(e)}), 500
 
-
 @app.route('/data/values', methods=['GET'])
 def data_values():
     """
     Distinct values for one column — powers dropdown filters.
-    Params: portal_id, column, from_date, to_date, restrict_values (repeatable)
+    Params: portal_id, email, column, from_date, to_date
+    `email` is required; restriction is resolved server-side (see data_load).
     """
     try:
         portal_id       = request.args.get('portal_id', 'pos-sales')
         column          = request.args.get('column', '').strip().upper()
         from_date       = request.args.get('from_date', '')
         to_date         = request.args.get('to_date', '')
-        restrict_values = request.args.getlist('restrict_value')
-        restrict_values_json = request.args.get('restrict_values', '')
-        if restrict_values_json:
-            restrict_values = json.loads(restrict_values_json)
-
         portal      = _load_portal(portal_id)
         config      = portal['config']
         view_name   = portal['view_name']
         date_col    = config.get('date_col')
         restrict_cols = _portal_restrict_cols(config)
-        restrict_map = _normalize_restrictions(config, restrict_values)
+        # Derived server-side from the caller's email — see data_load().
+        restrict_map = _resolve_portal_restrictions(config, portal_id, request.args.get('email', ''))
         allowed_cols = _portal_allowed_cols(config)
-
         if column not in allowed_cols:
             return jsonify({'error': f'Column not allowed: {column}'}), 400
-
         where = _build_where(
             from_date, to_date, {}, {},
             restrict_cols, restrict_map, date_col, allowed_cols
         )
         conn = _fab_conn()
-
         rows = conn.execute(f"""
             SELECT DISTINCT CAST({column} AS NVARCHAR(500)) AS val
             FROM {view_name}
@@ -1536,43 +1533,35 @@ def data_values():
               AND CAST({column} AS NVARCHAR(500)) != N''
             ORDER BY val
         """).fetchall()
-
         blank_cnt = conn.execute(f"""
             SELECT COUNT(*) FROM {view_name}
             WHERE {where}
               AND ({column} IS NULL OR CAST({column} AS NVARCHAR(500)) = N'')
         """).fetchone()[0]
-
         conn.close()
         return jsonify({'values': [r[0] for r in rows], 'has_blank': blank_cnt > 0})
-
+    except PermissionDenied as e:
+        return jsonify({'error': str(e)}), 403
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
     except Exception as e:
         print("Data values failed:", traceback.format_exc(), flush=True)
         return jsonify({'error': str(e)}), 500
 
-
 def _export_context(args):
     portal_id = args.get('portal_id', 'pos-sales')
     from_date = args.get('from_date', '').strip()
     to_date = args.get('to_date', '').strip()
-    restrict_values = args.getlist('restrict_value')
-    restrict_values_json = args.get('restrict_values', '')
-    if restrict_values_json:
-        restrict_values = json.loads(restrict_values_json)
-
     portal = _load_portal(portal_id)
     config = portal['config']
     view_name = portal['view_name']
     date_col = config.get('date_col')
     if date_col and (not from_date or not to_date):
         raise ValueError('from_date and to_date required')
-
     restrict_cols = _portal_restrict_cols(config)
-    restrict_map = _normalize_restrictions(config, restrict_values)
+    # Derived server-side from the caller's email — see data_load().
+    restrict_map = _resolve_portal_restrictions(config, portal_id, args.get('email', ''))
     allowed_cols = _portal_allowed_cols(config)
-
     filters, text_filters = {}, {}
     for col in allowed_cols:
         values = args.getlist(f'fd_{col}')
@@ -1581,7 +1570,6 @@ def _export_context(args):
         val = args.get(f'ft_{col}', '').strip()
         if val:
             text_filters[col] = val
-
     where = _build_where(
         from_date, to_date, filters, text_filters,
         restrict_cols, restrict_map, date_col, allowed_cols
@@ -1594,7 +1582,6 @@ def _export_context(args):
         'sql': _portal_select_sql(config, view_name, where),
     }
 
-
 def _zip_settings():
     if EXPORT_ZIP_COMPRESSION in ('stored', 'none', 'off', 'false', '0'):
         return {'compression': zipfile.ZIP_STORED}
@@ -1603,7 +1590,6 @@ def _zip_settings():
         'compresslevel': min(EXPORT_ZIP_COMPRESSLEVEL, 9),
     }
 
-
 def _open_csv_part(zf, ctx, part):
     raw = zf.open(f"{ctx['file_stem']}_part{part}.csv", 'w', force_zip64=True)
     text = io.TextIOWrapper(raw, encoding='utf-8', newline='', write_through=False)
@@ -1611,13 +1597,11 @@ def _open_csv_part(zf, ctx, part):
     writer.writerow(ctx['headers'])
     return text, writer
 
-
 def _write_cursor_to_zip(cursor, export_id, ctx, tmp_path):
     total_rows = 0
     part = 1
     row_count = 0
     csv_out = None
-
     with zipfile.ZipFile(tmp_path, 'w', allowZip64=True, **_zip_settings()) as zf:
         try:
             csv_out, writer = _open_csv_part(zf, ctx, part)
@@ -1625,12 +1609,10 @@ def _write_cursor_to_zip(cursor, export_id, ctx, tmp_path):
                 batch = cursor.fetchmany(EXPORT_FETCH_BATCH_SIZE)
                 if not batch:
                     break
-
                 writer.writerows(batch)
                 row_count += len(batch)
                 total_rows += len(batch)
                 _set_export_progress(export_id, status='extracting', rows=total_rows, files=part)
-
                 if row_count >= EXPORT_ROWS_PER_FILE:
                     csv_out.close()
                     csv_out = None
@@ -1641,9 +1623,7 @@ def _write_cursor_to_zip(cursor, export_id, ctx, tmp_path):
         finally:
             if csv_out is not None and not csv_out.closed:
                 csv_out.close()
-
     return total_rows, part
-
 
 def _write_export_zip(export_id, ctx):
     conn = None
@@ -1655,17 +1635,13 @@ def _write_export_zip(export_id, ctx):
         _set_export_progress(export_id, status='querying', rows=0, files=0)
         cursor.execute(ctx['sql'])
         _set_export_progress(export_id, status='extracting', rows=0, files=1)
-
         with tempfile.NamedTemporaryFile(prefix=f"{ctx['portal_id']}_", suffix='.zip', delete=False) as tmp:
             tmp_path = tmp.name
-
         total_rows, part = _write_cursor_to_zip(cursor, export_id, ctx, tmp_path)
     finally:
         if conn is not None:
             conn.close()
-
     return tmp_path, total_rows, part
-
 
 def _run_export_job(export_id, ctx):
     try:
@@ -1683,7 +1659,6 @@ def _run_export_job(export_id, ctx):
         _set_export_progress(export_id, status='failed', error=str(e))
         print("Export job failed:", traceback.format_exc(), flush=True)
 
-
 @app.route('/export/start', methods=['GET'])
 def export_start():
     try:
@@ -1695,13 +1670,14 @@ def export_start():
         worker = _threading.Thread(target=_run_export_job, args=(export_id, ctx), daemon=True)
         worker.start()
         return jsonify({'status': 'queued', 'export_id': export_id})
+    except PermissionDenied as e:
+        return jsonify({'error': str(e)}), 403
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         _set_export_progress(request.args.get('export_id', '').strip(), status='failed', error=str(e))
         print("Export start failed:", traceback.format_exc(), flush=True)
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/export/file', methods=['GET'])
 def export_file():
@@ -1715,7 +1691,6 @@ def export_file():
     path = status.get('path')
     if not path or not os.path.exists(path):
         return jsonify({'error': 'export file is missing'}), 404
-
     response = send_file(
         path,
         mimetype='application/zip',
@@ -1723,7 +1698,6 @@ def export_file():
         download_name=status.get('filename', f'{export_id}.zip'),
         max_age=0,
     )
-
     @response.call_on_close
     def cleanup_export_file():
         try:
@@ -1732,9 +1706,7 @@ def export_file():
             _set_export_progress(export_id, status='done')
         except Exception:
             pass
-
     return response
-
 
 @app.route('/export', methods=['GET'])
 def export_data():
@@ -1744,61 +1716,23 @@ def export_data():
             fd_COLUMN (dropdown), ft_COLUMN (text contains)
     """
     try:
-        portal_id       = request.args.get('portal_id', 'pos-sales')
-        export_id       = request.args.get('export_id', '').strip()
-        from_date       = request.args.get('from_date', '').strip()
-        to_date         = request.args.get('to_date', '').strip()
-        restrict_values = request.args.getlist('restrict_value')
-        restrict_values_json = request.args.get('restrict_values', '')
-        if restrict_values_json:
-            restrict_values = json.loads(restrict_values_json)
-
-        portal       = _load_portal(portal_id)
-        config       = portal['config']
-        view_name    = portal['view_name']
-        date_col     = config.get('date_col')
-        if date_col and (not from_date or not to_date):
-            return jsonify({'error': 'from_date and to_date required'}), 400
-        restrict_cols = _portal_restrict_cols(config)
-        restrict_map = _normalize_restrictions(config, restrict_values)
-        allowed_cols = _portal_allowed_cols(config)
-
-        # Parse fd_ (dropdown IN) and ft_ (text LIKE) filter params
-        filters, text_filters = {}, {}
-        for col in allowed_cols:
-            values = request.args.getlist(f'fd_{col}')
-            if values:
-                filters[col] = values
-            val = request.args.get(f'ft_{col}', '').strip()
-            if val:
-                text_filters[col] = val
-
-        where     = _build_where(
-            from_date, to_date, filters, text_filters,
-            restrict_cols, restrict_map, date_col, allowed_cols
-        )
-        file_stem = f'{portal_id}_{from_date}_to_{to_date}'
-        headers   = _portal_export_headers(config)
-        sql       = _portal_select_sql(config, view_name, where)
-        ctx       = {
-            'portal_id': portal_id,
-            'file_stem': file_stem,
-            'headers': headers,
-            'sql': sql,
-        }
+        export_id = request.args.get('export_id', '').strip()
+        # Reuse _export_context (same helper /export/start uses) so the
+        # server-side email→restriction lookup is applied consistently
+        # instead of re-deriving (and re-trusting client restrict_values)
+        # here separately.
+        ctx = _export_context(request.args)
+        portal_id = ctx['portal_id']
         _set_export_progress(export_id, status='starting', rows=0, files=0, portal_id=portal_id)
         tmp_path, total_rows, part = _write_export_zip(export_id, ctx)
-
         _set_export_progress(export_id, status='sending', rows=total_rows if 'total_rows' in locals() else 0, files=part if 'part' in locals() else 0)
-
         response = send_file(
             tmp_path,
             mimetype='application/zip',
             as_attachment=True,
-            download_name=f'{file_stem}.zip',
+            download_name=f"{ctx['file_stem']}.zip",
             max_age=0,
         )
-
         @response.call_on_close
         def cleanup_export_file():
             try:
@@ -1807,9 +1741,9 @@ def export_data():
                 _set_export_progress(export_id, status='done')
             except Exception:
                 pass
-
         return response
-
+    except PermissionDenied as e:
+        return jsonify({'error': str(e)}), 403
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
     except Exception as e:
@@ -1821,7 +1755,6 @@ def export_data():
         _set_export_progress(export_id if 'export_id' in locals() else '', status='failed', error=str(e))
         print("Export failed:", traceback.format_exc(), flush=True)
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/export/status', methods=['GET'])
 def export_status():
@@ -1835,9 +1768,7 @@ def export_status():
     status.pop('path', None)
     return jsonify(status)
 
-
 init_db()
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001)
