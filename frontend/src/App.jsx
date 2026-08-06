@@ -161,7 +161,7 @@ function MultiDropdown({ portalId, column, fromDate, toDate, restrictValues, sel
 
 // ── Main App ──────────────────────────────────────────────────────────────
 export default function App({ user, allowedBrands, portal, showAdmin, onBack }) {
-  const isAdmin = allowedBrands.length === 0
+  const isAdmin = !!user.isAdmin
 
   // Show Admin page (triggered from PortalHome)
   if (showAdmin && isAdmin) {

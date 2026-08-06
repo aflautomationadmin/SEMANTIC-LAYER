@@ -112,15 +112,16 @@ export default function AuthWrapper({ children }) {
       return
     }
     const account = accounts[0]
-    getBrandAccess(account.username).then(brands => {
+    getBrandAccess(account.username).then(access => {
       const rbac = {
         displayName: account.name ?? account.username,
         email:       account.username,
-        brands,
+        isAdmin:     access ? access.isAdmin : false,
+        brands:      access ? access.brands  : [],
       }
       setRbac(rbac)
       logEvent(rbac, 'login', {
-        brands: brands === null ? 'denied' : brands.length === 0 ? 'all' : brands,
+        brands: access === null ? 'denied' : access.isAdmin ? 'all' : access.brands,
       })
     })
   }, [isAuthenticated, accounts])
@@ -139,8 +140,8 @@ export default function AuthWrapper({ children }) {
 
   if (rbac === undefined) return null
 
-  if (rbac.brands === null) {
-    return <AccessDenied email={rbac.email} />
+  if (rbac === null || (!rbac.isAdmin && rbac.brands === null)) {
+    return <AccessDenied email={accounts[0]?.username || ''} />
   }
 
   // Show portal home if no portal selected

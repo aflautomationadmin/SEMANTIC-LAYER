@@ -470,7 +470,7 @@ function UsersTab({ currentUser }) {
     await fetch(`/permissions-api/portals/${selId}/access`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, restrict_values: vals }),
+      body: JSON.stringify({ email, restrict_values: vals, caller_email: currentUser.email }),
     })
   }
 
@@ -492,7 +492,7 @@ function UsersTab({ currentUser }) {
   }
 
   const removeUser = async (email) => {
-    await fetch(`/permissions-api/portals/${selId}/access/${encodeURIComponent(email)}`, { method: 'DELETE' })
+    await fetch(`/permissions-api/portals/${selId}/access/${encodeURIComponent(email)}?caller_email=${encodeURIComponent(currentUser.email)}`, { method: 'DELETE' })
     fetchAccess(selId)
   }
 
@@ -1036,7 +1036,7 @@ function Step2Columns({ draft, setDraft }) {
 
 
 // Portal Wizard (create / edit)
-function PortalWizard({ editing, onClose, onSaved }) {
+function PortalWizard({ editing, onClose, onSaved, callerEmail }) {
   const isNew = !editing
 
   const [step, setStep]           = useState(1)
@@ -1140,10 +1140,11 @@ function PortalWizard({ editing, onClose, onSaved }) {
     setSaving(true); setSaveError('')
     try {
       const body = {
-        name:        draft.name.trim(),
-        description: draft.description.trim(),
-        view_name:   draft.view_name.trim(),
-        config:      buildConfig(),
+        name:         draft.name.trim(),
+        description:  draft.description.trim(),
+        view_name:    draft.view_name.trim(),
+        config:       buildConfig(),
+        caller_email: callerEmail,
       }
       if (!isNew) body.id = draft.id
 
@@ -1214,7 +1215,7 @@ function PortalWizard({ editing, onClose, onSaved }) {
 }
 
 // Portals Tab
-function PortalsTab() {
+function PortalsTab({ callerEmail }) {
   const [portals,   setPortals]   = useState([])
   const [loading,   setLoading]   = useState(true)
   const [error,     setError]     = useState(null)
@@ -1243,7 +1244,7 @@ function PortalsTab() {
       await fetch(`/permissions-api/portals/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_active: makeActive }),
+        body: JSON.stringify({ is_active: makeActive, caller_email: callerEmail }),
       })
       load()
     } catch(e) {
@@ -1259,7 +1260,7 @@ function PortalsTab() {
     )) return
     setDeleting(id)
     try {
-      const r = await fetch(`/permissions-api/portals/${id}?permanent=true`, { method: 'DELETE' })
+      const r = await fetch(`/permissions-api/portals/${id}?permanent=true&caller_email=${encodeURIComponent(callerEmail)}`, { method: 'DELETE' })
       const d = await r.json()
       if (!r.ok) throw new Error(d.error || 'Delete failed')
       load()
@@ -1368,6 +1369,7 @@ function PortalsTab() {
           editing={editing}
           onClose={() => setEditing(undefined)}
           onSaved={load}
+          callerEmail={callerEmail}
         />
       )}
     </div>
@@ -1384,7 +1386,7 @@ export default function AdminPage({ currentUser, onBack }) {
 
   const persist = async (newConfig) => {
     setConfig(newConfig)
-    await savePermissions(newConfig)
+    await savePermissions(newConfig, currentUser.email)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -1444,7 +1446,7 @@ export default function AdminPage({ currentUser, onBack }) {
         {tab === 'admins' && <AdminsTab config={config} persist={persist} currentUser={currentUser} />}
 
         {/* ── Portals tab ── */}
-        {tab === 'portals' && <PortalsTab />}
+        {tab === 'portals' && <PortalsTab callerEmail={currentUser.email} />}
 
         {/* ── Logs tab ── */}
         {tab === 'logs' && (

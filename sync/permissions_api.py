@@ -673,6 +673,34 @@ FY27_KPI_TRACKER_PVH_TEMPLATE[3]["rows"] = [dict(r) for r in FY27_KPI_TRACKER_PV
 # get_con() defined above as a singleton
 
 
+def _is_admin(email: str) -> bool:
+    """Return True only if the email is in app_permissions.admins."""
+    if not email:
+        return False
+    try:
+        with _db_lock:
+            row = get_con().execute("SELECT config FROM app_permissions WHERE id=1").fetchone()
+        cfg = json.loads(row[0]) if row else DEFAULT_CONFIG
+        return any(a.lower() == email.strip().lower() for a in cfg.get('admins', []))
+    except Exception:
+        return False
+
+
+def _require_admin():
+    """
+    Check caller_email from request body or query param.
+    Returns a 403 response tuple if the caller is not an admin, otherwise None.
+    """
+    if request.method in ('POST', 'PUT', 'PATCH'):
+        body = request.get_json(silent=True) or {}
+        email = body.get('caller_email', '') or request.args.get('caller_email', '')
+    else:
+        email = request.args.get('caller_email', '')
+    if not _is_admin(email):
+        return jsonify({"error": "Admin access required"}), 403
+    return None
+
+
 def init_db():
     con = get_con()
 
@@ -853,10 +881,13 @@ def check_access():
 
 @app.route('/permissions', methods=['POST'])
 def save_permissions():
+    err = _require_admin()
+    if err: return err
     try:
         config = request.get_json()
         if not config:
             return jsonify({"error": "No data"}), 400
+        config.pop('caller_email', None)  # strip control field before storing
         with _db_lock:
             con = get_con()
             con.execute("UPDATE app_permissions SET config=? WHERE id=1", [json.dumps(config)])
@@ -1175,6 +1206,8 @@ def list_portals():
 @app.route('/portals', methods=['POST'])
 def create_portal():
     """Create a new portal."""
+    err = _require_admin()
+    if err: return err
     try:
         body = request.get_json() or {}
         name = body.get('name', '').strip()
@@ -1215,6 +1248,8 @@ def update_portal(portal_id):
     PUT  — full update (name, description, view_name, config).
     PATCH — partial update; currently supports toggling is_active.
     """
+    err = _require_admin()
+    if err: return err
     try:
         body = request.get_json() or {}
         with _db_lock:
@@ -1247,6 +1282,8 @@ def delete_portal(portal_id):
     ?permanent=true  — hard-delete the row + all portal_access rows.
     (default)        — soft-delete: sets is_active=FALSE.
     """
+    err = _require_admin()
+    if err: return err
     try:
         permanent = request.args.get('permanent', '').lower() in ('1', 'true', 'yes')
         with _db_lock:
@@ -1393,6 +1430,8 @@ def get_portal_access(portal_id):
 @app.route('/portals/<portal_id>/access', methods=['POST'])
 def set_portal_access(portal_id):
     """Add or update a user's access to a portal."""
+    err = _require_admin()
+    if err: return err
     try:
         body   = request.get_json() or {}
         email  = body.get('email', '').strip().lower()
@@ -1424,6 +1463,8 @@ def set_portal_access(portal_id):
 @app.route('/portals/<portal_id>/access/<path:email>', methods=['DELETE'])
 def remove_portal_access(portal_id, email):
     """Remove a user from a portal."""
+    err = _require_admin()
+    if err: return err
     try:
         with _db_lock:
             get_con().execute(

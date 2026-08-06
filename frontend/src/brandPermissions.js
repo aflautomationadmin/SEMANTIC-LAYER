@@ -38,19 +38,20 @@ export async function loadPermissions() {
   return structuredClone(DEFAULT_CONFIG)
 }
 
-export async function savePermissions(config) {
+export async function savePermissions(config, callerEmail) {
   await fetch(API_URL, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify(config),
+    body:    JSON.stringify({ ...config, caller_email: callerEmail }),
   })
 }
 
 /**
  * Returns:
- *   []        – admin or portal-access user (full gate-level access)
- *   string[]  – legacy brand-restricted user
- *   null      – no access at all
+ *   { isAdmin: true,  brands: [] }        – admin (full access)
+ *   { isAdmin: false, brands: string[] }  – legacy brand-restricted user
+ *   { isAdmin: false, brands: [] }        – portal-access-only user (non-admin)
+ *   null                                  – no access at all
  *
  * All logic lives in the backend /check-access endpoint so this
  * function is a thin wrapper with no duplicated rules.
@@ -61,11 +62,11 @@ export async function getBrandAccess(email) {
     const res  = await fetch(`/permissions-api/check-access?email=${encodeURIComponent(email)}`)
     const data = await res.json()
     if (!data.allowed) return null
-    // Legacy brand list preserved for any downstream brand-filter logic
-    return (data.brands && data.brands.length > 0) ? data.brands : []
+    return {
+      isAdmin: !!data.is_admin,
+      brands:  (data.brands && data.brands.length > 0) ? data.brands : [],
+    }
   } catch {
-    // Network failure — fail open only if there's a cached config saying they're admin
-    // Otherwise deny to be safe
     return null
   }
 }

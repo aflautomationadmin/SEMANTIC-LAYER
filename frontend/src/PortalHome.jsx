@@ -7,7 +7,7 @@ export default function PortalHome({ user, onSelect, onAdmin }) {
   const [portals, setPortals]   = useState([])
   const [loading, setLoading]   = useState(true)
   const [error, setError]       = useState(null)
-  const isAdmin = user.brands && user.brands.length === 0
+  const isAdmin = !!user.isAdmin
 
   const restrictionText = portal => {
     const vals = portal.restrict_values
