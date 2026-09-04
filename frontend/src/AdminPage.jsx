@@ -1579,9 +1579,27 @@ function LogsTab() {
       .catch(() => {})
   }
 
-  const exportCSV = () => {
+  const exportCSV = async () => {
+    // Fetch ALL matching logs (not just the current page)
+    const params = new URLSearchParams({
+      limit:  10000,
+      offset: 0,
+      ...(filterAction && { action: filterAction }),
+      ...(filterEmail  && { email:  filterEmail  }),
+      ...(fromDate     && { from_date: fromDate   }),
+      ...(toDate       && { to_date:   toDate     }),
+    })
+    let allLogs = []
+    try {
+      const res  = await fetch(`/permissions-api/logs?${params}`)
+      const data = await res.json()
+      allLogs = data.logs || []
+    } catch {
+      allLogs = logs // fallback to current page
+    }
+
     const header = 'Timestamp,User,Email,Action,Portal,Details'
-    const rows = logs.map(l =>
+    const rows = allLogs.map(l =>
       [
         `"${fmtTs(l.ts)}"`,
         `"${l.name}"`,
