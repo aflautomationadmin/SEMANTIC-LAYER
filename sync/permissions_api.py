@@ -50,6 +50,18 @@ EXPORT_ZIP_COMPRESSION = os.environ.get('EXPORT_ZIP_COMPRESSION', 'deflated').st
 EXPORT_ZIP_COMPRESSLEVEL = _env_int('EXPORT_ZIP_COMPRESSLEVEL', 1, 0)
 
 
+def _cleanup_stale_export_zips():
+    """Delete any leftover *.zip export files from /tmp on startup."""
+    import glob
+    for f in glob.glob('/tmp/*.zip'):
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+
+_cleanup_stale_export_zips()
+
+
 def _set_export_progress(export_id, **patch):
     if not export_id:
         return
