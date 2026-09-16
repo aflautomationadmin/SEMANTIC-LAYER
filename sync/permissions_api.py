@@ -50,14 +50,19 @@ EXPORT_ZIP_COMPRESSION = os.environ.get('EXPORT_ZIP_COMPRESSION', 'deflated').st
 EXPORT_ZIP_COMPRESSLEVEL = _env_int('EXPORT_ZIP_COMPRESSLEVEL', 1, 0)
 
 
+EXPORT_TMP_DIR = os.environ.get('EXPORT_TMP_DIR', '/mnt/exports')
+os.makedirs(EXPORT_TMP_DIR, exist_ok=True)
+
+
 def _cleanup_stale_export_zips():
-    """Delete any leftover *.zip export files from /tmp on startup."""
+    """Delete leftover *.zip export files from the export temp dir and /tmp on startup."""
     import glob
-    for f in glob.glob('/tmp/*.zip'):
-        try:
-            os.remove(f)
-        except Exception:
-            pass
+    for pattern in (os.path.join(EXPORT_TMP_DIR, '*.zip'), '/tmp/*.zip'):
+        for f in glob.glob(pattern):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
 
 _cleanup_stale_export_zips()
 
@@ -1709,7 +1714,8 @@ def _write_export_zip(export_id, ctx):
         cursor.execute(ctx['sql'])
         _set_export_progress(export_id, status='extracting', rows=0, files=1)
 
-        with tempfile.NamedTemporaryFile(prefix=f"{ctx['portal_id']}_", suffix='.zip', delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(prefix=f"{ctx['portal_id']}_", suffix='.zip',
+                                         dir=EXPORT_TMP_DIR, delete=False) as tmp:
             tmp_path = tmp.name
 
         total_rows, part = _write_cursor_to_zip(cursor, export_id, ctx, tmp_path)
