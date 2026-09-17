@@ -32,7 +32,7 @@ function LoginPage({ onLogin, loading }) {
               <img src={arvindLogo} alt="Arvind Fashions" className="auth-logo-img" />
             </div>
             <h1>Arvind Analytics</h1>
-            <p>Enterprise sales intelligence platform</p>
+            <p>Enterprise intelligence platform</p>
           </div>
           <div className="auth-tagline">
             <div className="auth-feature">📊 Configurable Data Portals</div>
