@@ -188,6 +188,18 @@ def _format_kpi_number(val) -> str:
     return str(val)
 
 
+def _clean_csv_val(val):
+    """Round floats to 2 decimal places to avoid floating-point noise in CSV exports."""
+    if isinstance(val, float):
+        rounded = round(val, 2)
+        return int(rounded) if rounded == int(rounded) else rounded
+    return val
+
+
+def _clean_csv_row(row):
+    return [_clean_csv_val(v) for v in row]
+
+
 def _valid_view_name(view: str) -> bool:
     """Allow only schema.ViewName format to prevent SQL injection."""
     return bool(re.match(r'^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$', view.strip()))
@@ -331,12 +343,19 @@ def _portal_select_sql(config: dict, view_name: str, where: str, limit=None, ord
     # Simple aggregate path for SUM/AVG only.
     simple_aggs = {'sum': 'SUM', 'avg': 'AVG'}
     if measures and all(m["aggregate"] in simple_aggs for m in measures):
-        select_dims = [f"{expr} AS {key}" for expr, key in zip(dim_exprs, dim_keys)]
-        select_measures = [
-            f"{simple_aggs[m['aggregate']]}(TRY_CAST({m['key']} AS FLOAT)) AS {m['key']}"
-            for m in measures
-        ]
-        cols_sql = ', '.join(select_dims + select_measures)
+        dim_iter = iter(zip(dim_exprs, dim_keys))
+        meas_iter = iter(measures)
+        ordered_select = []
+        for col in _portal_visible_cols(config):
+            key = col['key'].upper()
+            if _is_measure_col(col):
+                m = next(meas_iter)
+                agg = simple_aggs[m['aggregate']]
+                ordered_select.append(f"{agg}(TRY_CAST({m['key']} AS FLOAT)) AS {m['key']}")
+            else:
+                expr, k = next(dim_iter)
+                ordered_select.append(f"{expr} AS {k}")
+        cols_sql = ', '.join(ordered_select)
         group_by = f" GROUP BY {', '.join(dim_exprs)}" if dim_exprs else ""
         order_col = dim_exprs[0] if dim_exprs else "1"
         order_sql = f" ORDER BY {order_col}" if order else ""
@@ -1684,7 +1703,7 @@ def _write_cursor_to_zip(cursor, export_id, ctx, tmp_path):
                 if not batch:
                     break
 
-                writer.writerows(batch)
+                writer.writerows(_clean_csv_row(row) for row in batch)
                 row_count += len(batch)
                 total_rows += len(batch)
                 _set_export_progress(export_id, status='extracting', rows=total_rows, files=part)
