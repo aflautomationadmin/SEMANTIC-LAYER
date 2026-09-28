@@ -276,9 +276,14 @@ def _aggregate_for_col(col: dict) -> str:
     return 'sum' if col.get('currency') or col.get('is_numeric') else 'group'
 
 
+def _bracket(key: str) -> str:
+    """Wrap a column key in square brackets for SQL Server safety."""
+    return f'[{key}]'
+
+
 def _col_expr(key: str, date_col: str) -> str:
     key = key.upper()
-    return f'CAST({key} AS DATE)' if date_col and key == date_col.upper() else key
+    return f'CAST([{key}] AS DATE)' if date_col and key == date_col.upper() else f'[{key}]'
 
 
 def _portal_query_parts(config: dict):
@@ -295,17 +300,17 @@ def _portal_query_parts(config: dict):
             measures.append({"key": key, "aggregate": agg})
             output.append({"type": "measure", "key": key, "aggregate": agg})
             if agg == 'avg':
-                select_parts.append(f'AVG(TRY_CAST({key} AS FLOAT)) AS {key}')
+                select_parts.append(f'AVG(TRY_CAST([{key}] AS FLOAT)) AS [{key}]')
             elif agg in ('median', 'mode'):
-                select_parts.append(key)
+                select_parts.append(f'[{key}]')
             else:
-                select_parts.append(f'SUM(TRY_CAST({key} AS FLOAT)) AS {key}')
+                select_parts.append(f'SUM(TRY_CAST([{key}] AS FLOAT)) AS [{key}]')
         else:
             expr = _col_expr(key, date_col)
             dimensions.append(expr)
             dimension_keys.append(key)
             output.append({"type": "dimension", "key": key})
-            select_parts.append(f'{expr} AS {key}')
+            select_parts.append(f'{expr} AS [{key}]')
 
     return {
         "select": select_parts,
@@ -361,54 +366,56 @@ def _portal_select_sql(config: dict, view_name: str, where: str, limit=None, ord
         return f"SELECT {top}{cols_sql} FROM {view_name} WHERE {where}{group_by}{order_sql}"
 
     # Window/CTE path for MEDIAN and MODE.
-    base_cols = [f"{expr} AS {key}" for expr, key in zip(dim_exprs, dim_keys)]
-    base_cols += [f"TRY_CAST({m['key']} AS FLOAT) AS {m['key']}" for m in measures]
+    base_cols = [f"{expr} AS [{key}]" for expr, key in zip(dim_exprs, dim_keys)]
+    base_cols += [f"TRY_CAST([{m['key']}] AS FLOAT) AS [{m['key']}]" for m in measures]
+    bk = [f'[{k}]' for k in dim_keys]
     ctes = [f"base AS (SELECT {', '.join(base_cols)} FROM {view_name} WHERE {where})"]
     if dim_keys:
-        ctes.append(f"groups AS (SELECT {', '.join(dim_keys)} FROM base GROUP BY {', '.join(dim_keys)})")
+        ctes.append(f"groups AS (SELECT {', '.join(bk)} FROM base GROUP BY {', '.join(bk)})")
     else:
         ctes.append("groups AS (SELECT 1 AS __ONE)")
 
     joins = []
     grouped_aggs = [m for m in measures if m["aggregate"] in ('sum', 'avg')]
     if grouped_aggs:
-        agg_select = [f"{m['aggregate'].upper()}({m['key']}) AS {m['key']}" for m in grouped_aggs]
-        group_by = f" GROUP BY {', '.join(dim_keys)}" if dim_keys else ""
-        prefix = f"{', '.join(dim_keys)}, " if dim_keys else ""
+        agg_select = [f"{m['aggregate'].upper()}([{m['key']}]) AS [{m['key']}]" for m in grouped_aggs]
+        group_by = f" GROUP BY {', '.join(bk)}" if dim_keys else ""
+        prefix = f"{', '.join(bk)}, " if dim_keys else ""
         ctes.append(f"agg AS (SELECT {prefix}{', '.join(agg_select)} FROM base{group_by})")
-        joins.append(f"LEFT JOIN agg a ON {_join_on_dims('g', 'a', dim_keys)}")
-    final_select_by_key = {k: f"g.{k}" for k in dim_keys}
-    final_select_by_key.update({m["key"]: f"a.{m['key']}" for m in grouped_aggs})
+        joins.append(f"LEFT JOIN agg a ON {_join_on_dims('g', 'a', bk)}")
+    final_select_by_key = {k: f"g.[{k}]" for k in dim_keys}
+    final_select_by_key.update({m["key"]: f"a.[{m['key']}]" for m in grouped_aggs})
 
     for m in measures:
         key = m["key"]
+        bkey = f"[{key}]"
         if m["aggregate"] == "median":
-            partition = f"PARTITION BY {', '.join(dim_keys)}" if dim_keys else ""
-            prefix = f"{', '.join(dim_keys)}, " if dim_keys else ""
+            partition = f"PARTITION BY {', '.join(bk)}" if dim_keys else ""
+            prefix = f"{', '.join(bk)}, " if dim_keys else ""
             ctes.append(
                 f"med_{key} AS (SELECT DISTINCT {prefix}"
-                f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {key}) OVER ({partition}) AS {key} "
-                f"FROM base WHERE {key} IS NOT NULL)"
+                f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {bkey}) OVER ({partition}) AS {bkey} "
+                f"FROM base WHERE {bkey} IS NOT NULL)"
             )
-            joins.append(f"LEFT JOIN med_{key} med_{key} ON {_join_on_dims('g', f'med_{key}', dim_keys)}")
-            final_select_by_key[key] = f"med_{key}.{key}"
+            joins.append(f"LEFT JOIN med_{key} med_{key} ON {_join_on_dims('g', f'med_{key}', bk)}")
+            final_select_by_key[key] = f"med_{key}.{bkey}"
         elif m["aggregate"] == "mode":
-            prefix = f"{', '.join(dim_keys)}, " if dim_keys else ""
-            group_by = f"{', '.join(dim_keys)}, {key}" if dim_keys else key
-            partition = f"PARTITION BY {', '.join(dim_keys)} " if dim_keys else ""
+            prefix = f"{', '.join(bk)}, " if dim_keys else ""
+            group_by = f"{', '.join(bk)}, {bkey}" if dim_keys else bkey
+            partition = f"PARTITION BY {', '.join(bk)} " if dim_keys else ""
             ctes.append(
-                f"mode_count_{key} AS (SELECT {prefix}{key}, COUNT(*) AS cnt "
-                f"FROM base WHERE {key} IS NOT NULL GROUP BY {group_by})"
+                f"mode_count_{key} AS (SELECT {prefix}{bkey}, COUNT(*) AS cnt "
+                f"FROM base WHERE {bkey} IS NOT NULL GROUP BY {group_by})"
             )
             ctes.append(
-                f"mode_{key} AS (SELECT {prefix}{key} FROM (SELECT {prefix}{key}, "
-                f"ROW_NUMBER() OVER ({partition}ORDER BY cnt DESC, {key}) AS rn "
+                f"mode_{key} AS (SELECT {prefix}{bkey} FROM (SELECT {prefix}{bkey}, "
+                f"ROW_NUMBER() OVER ({partition}ORDER BY cnt DESC, {bkey}) AS rn "
                 f"FROM mode_count_{key}) q WHERE rn=1)"
             )
-            joins.append(f"LEFT JOIN mode_{key} mode_{key} ON {_join_on_dims('g', f'mode_{key}', dim_keys)}")
-            final_select_by_key[key] = f"mode_{key}.{key}"
+            joins.append(f"LEFT JOIN mode_{key} mode_{key} ON {_join_on_dims('g', f'mode_{key}', bk)}")
+            final_select_by_key[key] = f"mode_{key}.{bkey}"
 
-    order_col = f"g.{dim_keys[0]}" if dim_keys else "1"
+    order_col = f"g.[{dim_keys[0]}]" if dim_keys else "1"
     order_sql = f" ORDER BY {order_col}" if order else ""
     final_select = [final_select_by_key[c["key"]] for c in parts["output"]]
     return f"WITH {', '.join(ctes)} SELECT {top}{', '.join(final_select)} FROM groups g {' '.join(joins)}{order_sql}"
