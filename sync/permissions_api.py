@@ -425,7 +425,7 @@ def _portal_count_sql(config: dict, view_name: str, where: str) -> str:
     if parts["dimensions"]:
         group_by = ', '.join(parts["dimensions"])
         select_sql = ', '.join(
-            f"{expr} AS {key}"
+            f"{expr} AS [{key}]"
             for expr, key in zip(parts["dimensions"], parts["dimension_keys"])
         )
         return f"SELECT COUNT(*) FROM (SELECT {select_sql} FROM {view_name} WHERE {where} GROUP BY {group_by}) q"
