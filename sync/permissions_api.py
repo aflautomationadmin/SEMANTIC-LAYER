@@ -282,17 +282,16 @@ def _bracket(key: str) -> str:
 
 
 def _col_expr(key: str, date_col: str) -> str:
-    key = key.upper()
-    return f'CAST([{key}] AS DATE)' if date_col and key == date_col.upper() else f'[{key}]'
+    return f'CAST([{key}] AS DATE)' if date_col and key.upper() == date_col.upper() else f'[{key}]'
 
 
 def _portal_query_parts(config: dict):
     """Build grouped SELECT metadata from the visible portal columns."""
-    date_col = (config.get('date_col') or '').upper()
+    date_col = (config.get('date_col') or '')
     dimensions, dimension_keys, measures, select_parts, headers, output = [], [], [], [], [], []
 
     for c in _portal_visible_cols(config):
-        key = c['key'].upper()
+        key = c['key']  # preserve original case — DB may have case-sensitive collation
         label = c.get('label') or key
         headers.append(label)
         if _is_measure_col(c):
@@ -447,8 +446,8 @@ def _build_where(from_date, to_date, filters, text_filters,
     conds = []
     if date_col and from_date and to_date:
         conds.extend([
-            f"CAST({date_col} AS DATE) >= '{_safe(from_date)}'",
-            f"CAST({date_col} AS DATE) <= '{_safe(to_date)}'",
+            f"CAST([{date_col}] AS DATE) >= '{_safe(from_date)}'",
+            f"CAST([{date_col}] AS DATE) <= '{_safe(to_date)}'",
         ])
 
     restrict_cols = [c.upper() for c in (restrict_cols or [])]
@@ -460,7 +459,7 @@ def _build_where(from_date, to_date, filters, text_filters,
         if col not in restrict_cols or col not in allowed_cols or not values:
             continue
         q = ', '.join(f"N'{_safe(v)}'" for v in values)
-        conds.append(f'{col} IN ({q})')
+        conds.append(f'[{col}] IN ({q})')
 
     # Dropdown / multi-select filters (fd_ prefix from frontend)
     for col, values in (filters or {}).items():
@@ -474,9 +473,9 @@ def _build_where(from_date, to_date, filters, text_filters,
         parts = []
         if non_blank:
             q = ', '.join(f"N'{_safe(v)}'" for v in non_blank)
-            parts.append(f'{col} IN ({q})')
+            parts.append(f'[{col}] IN ({q})')
         if want_blank:
-            parts.append(f"({col} IS NULL OR CAST({col} AS NVARCHAR(MAX)) = N'')")
+            parts.append(f"([{col}] IS NULL OR CAST([{col}] AS NVARCHAR(MAX)) = N'')")
         if parts:
             conds.append('(' + ' OR '.join(parts) + ')')
 
@@ -486,7 +485,7 @@ def _build_where(from_date, to_date, filters, text_filters,
         if col not in allowed_cols or not str(val).strip():
             continue
         conds.append(
-            f"LOWER(CAST({col} AS NVARCHAR(MAX))) LIKE N'%{_safe(str(val).lower())}%'"
+            f"LOWER(CAST([{col}] AS NVARCHAR(MAX))) LIKE N'%{_safe(str(val).lower())}%'"
         )
 
     return ' AND '.join(conds) if conds else '1=1'
@@ -1205,10 +1204,10 @@ def portal_column_values():
             return jsonify({"error": "view must be schema.ViewName format"}), 400
         conn = _fab_conn()
         rows = conn.execute(f"""
-            SELECT DISTINCT CAST({column} AS NVARCHAR(500)) AS val
+            SELECT DISTINCT CAST([{column}] AS NVARCHAR(500)) AS val
             FROM {view}
-            WHERE {column} IS NOT NULL
-              AND CAST({column} AS NVARCHAR(500)) != N''
+            WHERE [{column}] IS NOT NULL
+              AND CAST([{column}] AS NVARCHAR(500)) != N''
             ORDER BY val
         """).fetchall()
         conn.close()
