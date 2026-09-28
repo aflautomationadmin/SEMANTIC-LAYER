@@ -347,14 +347,13 @@ def _portal_select_sql(config: dict, view_name: str, where: str, limit=None, ord
         meas_iter = iter(measures)
         ordered_select = []
         for col in _portal_visible_cols(config):
-            key = col['key'].upper()
             if _is_measure_col(col):
                 m = next(meas_iter)
                 agg = simple_aggs[m['aggregate']]
-                ordered_select.append(f"{agg}(TRY_CAST({m['key']} AS FLOAT)) AS {m['key']}")
+                ordered_select.append(f"{agg}(TRY_CAST([{m['key']}] AS FLOAT)) AS [{m['key']}]")
             else:
                 expr, k = next(dim_iter)
-                ordered_select.append(f"{expr} AS {k}")
+                ordered_select.append(f"{expr} AS [{k}]")
         cols_sql = ', '.join(ordered_select)
         group_by = f" GROUP BY {', '.join(dim_exprs)}" if dim_exprs else ""
         order_col = dim_exprs[0] if dim_exprs else "1"
