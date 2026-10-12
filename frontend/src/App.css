@@ -123,6 +123,13 @@ body { font-family: 'Inter', sans-serif; background: #f0f0f0; color: var(--grey-
 .btn-primary:disabled, .btn-outline:disabled, .btn-download:disabled {
   opacity: .4; cursor: not-allowed;
 }
+.btn-cancel {
+  height: 36px; padding: 0 16px; border-radius: var(--r-sm);
+  font-size: 13.5px; font-weight: 600; font-family: inherit;
+  border: 1.5px solid #999; background: var(--white); color: #555;
+  cursor: pointer; white-space: nowrap;
+}
+.btn-cancel:hover { background: #f5f5f5; border-color: #666; color: #333; }
 .spinner {
   width: 13px; height: 13px;
   border: 2px solid rgba(255,255,255,.35); border-top-color: white;

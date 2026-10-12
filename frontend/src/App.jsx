@@ -21,11 +21,12 @@ function fmt(key, val, currencyCols, dateCol) {
 }
 
 // ── Generic fetch helper ─────────────────────────────────────────────────
-async function fabricLoad(path, body) {
+async function fabricLoad(path, body, signal) {
   const res = await fetch(`${DATA_API}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
@@ -219,8 +220,16 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
     Array.isArray(v) ? v.length > 0 : v && v.trim()
   ).length
 
+  const loadAbortRef = useRef(null)
+
+  const cancelLoad = useCallback(() => {
+    if (loadAbortRef.current) loadAbortRef.current.abort()
+  }, [])
+
   const loadData = useCallback(async () => {
     if (hasDateFilter && (!fromDate || !toDate)) return
+    const controller = new AbortController()
+    loadAbortRef.current = controller
     setLoading(true); setError(null); setPage(1); setTotalCount(null)
     const t0 = Date.now()
     try {
@@ -241,7 +250,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         text_filters:    textFilters,
         restrict_values: restrictValues,
         limit:           50000,
-      })
+      }, controller.signal)
 
       const countRequest = fabricLoad('/data/load', {
         portal_id: portal.id,
@@ -251,7 +260,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         text_filters: textFilters,
         restrict_values: restrictValues,
         count_only: true,
-      })
+      }, controller.signal)
 
       const [result, countResult] = await Promise.all([dataRequest, countRequest])
       const data = result.data || []
@@ -269,8 +278,10 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         duration_ms: Date.now() - t0,
       })
 
-    } catch (e) { setError(e.message) }
-    finally { setLoading(false) }
+    } catch (e) {
+      if (e.name !== 'AbortError') setError(e.message)
+    }
+    finally { setLoading(false); loadAbortRef.current = null }
   }, [fromDate, toDate, filterValues, portal.id, portal.name, restrictValues, hasDateFilter, user])
 
   const handleDownload = useCallback(async () => {
@@ -426,6 +437,11 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
               {loading && <span className="spinner" />}
               {loading ? 'Loading…' : 'Load Data'}
             </button>
+            {loading && (
+              <button className="btn-cancel" onClick={cancelLoad}>
+                Cancel
+              </button>
+            )}
             <button className="btn-download" onClick={handleDownload} disabled={!!dlState || !loaded}>
               {dlState ? (
                 <>
