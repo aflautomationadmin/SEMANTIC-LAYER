@@ -838,6 +838,12 @@ function Step1Info({ draft, setDraft, onDiscover, discovering, discoverError, is
           )
         }
       </div>
+      <div className="wiz-field">
+        <label className="field-label">Hours Taken <span className="field-hint">(optional - time spent building this portal)</span></label>
+        <input className="field-input" type="number" min="0" step="0.5" placeholder="e.g. 4"
+          value={draft.hours}
+          onChange={e => setDraft(d => ({ ...d, hours: e.target.value }))} />
+      </div>
       </>}
     </div>
   )
@@ -1052,6 +1058,7 @@ function PortalWizard({ editing, onClose, onSaved, callerEmail }) {
     view_name:    '',
     date_col:     '',
     restrict_cols: [],
+    hours:        '',
     columns:      [],
     config_type:  '',
     template:     '',
@@ -1070,6 +1077,7 @@ function PortalWizard({ editing, onClose, onSaved, callerEmail }) {
       restrict_cols: (cfg.restrict_cols && cfg.restrict_cols.length)
         ? cfg.restrict_cols
         : (cfg.restrict_col ? [cfg.restrict_col] : []),
+      hours:        cfg.hours != null ? String(cfg.hours) : '',
       columns:      cfg.columns || [],
       config_type:  cfg.type || '',
       template:     cfg.template || '',
@@ -1129,6 +1137,7 @@ function PortalWizard({ editing, onClose, onSaved, callerEmail }) {
       restrict_col: draft.restrict_cols[0] || null,
       restrict_cols: draft.restrict_cols,
       summarize:    true,
+      ...(draft.hours.trim() !== '' ? { hours: Number(draft.hours) } : {}),
     }
   }
 
@@ -1299,6 +1308,7 @@ function PortalsTab({ callerEmail }) {
                   <th>Name</th>
                   <th>Fabric View</th>
                   <th>Restrict Col</th>
+                  <th>Hours</th>
                   <th>Users</th>
                   <th>Status</th>
                   <th>Actions</th>
@@ -1306,7 +1316,7 @@ function PortalsTab({ callerEmail }) {
               </thead>
               <tbody>
                 {portals.length === 0 && (
-                  <tr><td colSpan={6} className="empty-row">No portals yet. Create one!</td></tr>
+                  <tr><td colSpan={7} className="empty-row">No portals yet. Create one!</td></tr>
                 )}
                 {portals.map(p => (
                   <tr key={p.id}>
@@ -1320,6 +1330,11 @@ function PortalsTab({ callerEmail }) {
                     <td>
                       {(p.restrict_cols && p.restrict_cols.length) || p.restrict_col
                         ? <span className="brand-pill">{(p.restrict_cols || [p.restrict_col]).filter(Boolean).join(', ')}</span>
+                        : <span style={{ color: '#aaa', fontSize: 12 }}>—</span>}
+                    </td>
+                    <td>
+                      {p.config?.hours != null
+                        ? <span style={{ fontWeight: 600 }}>{p.config.hours}h</span>
                         : <span style={{ color: '#aaa', fontSize: 12 }}>—</span>}
                     </td>
                     <td>
