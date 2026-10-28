@@ -276,6 +276,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         preview_rows: data.length,
         capped: fullCount > data.length,
         duration_ms: Date.now() - t0,
+        hrs_saved: portal.config?.hours ?? null,
       })
 
     } catch (e) {
@@ -354,6 +355,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
 
       logEvent(user, 'csv_export', {
         portal_id: portal.id, portal_name: portal.name, from_date: fromDate, to_date: toDate, filter_count: activeCount,
+        hrs_saved: portal.config?.hours ?? null,
       })
     } catch (e) {
       setError(`Download failed: ${e.message}`)

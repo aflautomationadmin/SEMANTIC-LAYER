@@ -1539,10 +1539,12 @@ function fmtDetails(action, details) {
     const previewRows = Number(details.preview_rows ?? details.row_count ?? 0).toLocaleString('en-IN')
     const previewText = details.capped ? ` · preview ${previewRows}` : ''
     const countNote = details.count_failed ? ' · count unavailable' : ''
-    return `${details.from_date} → ${details.to_date}  ·  ${totalRows} total rows${previewText}  ·  ${details.filter_count ?? 0} filters  ·  ${details.duration_ms ?? 0}ms${countNote}`
+    const hrsSaved = details.hrs_saved != null ? ` · ${details.hrs_saved}h saved` : ''
+    return `${details.from_date} → ${details.to_date}  ·  ${totalRows} total rows${previewText}  ·  ${details.filter_count ?? 0} filters  ·  ${details.duration_ms ?? 0}ms${countNote}${hrsSaved}`
   }
   if (action === 'csv_export') {
-    return `${details.from_date} → ${details.to_date}  ·  ${Number(details.total_rows ?? 0).toLocaleString('en-IN')} rows  ·  ${details.files ?? 1} file(s)`
+    const hrsSaved = details.hrs_saved != null ? ` · ${details.hrs_saved}h saved` : ''
+    return `${details.from_date} → ${details.to_date}  ·  ${Number(details.total_rows ?? 0).toLocaleString('en-IN')} rows  ·  ${details.files ?? 1} file(s)${hrsSaved}`
   }
   return JSON.stringify(details)
 }
