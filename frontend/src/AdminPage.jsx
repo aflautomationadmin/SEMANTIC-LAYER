@@ -839,7 +839,7 @@ function Step1Info({ draft, setDraft, onDiscover, discovering, discoverError, is
         }
       </div>
       <div className="wiz-field">
-        <label className="field-label">Hours Taken <span className="field-hint">(optional - time spent building this portal)</span></label>
+        <label className="field-label">Hours Saved <span className="field-hint">(optional - hours saved per download for the user)</span></label>
         <input className="field-input" type="number" min="0" step="0.5" placeholder="e.g. 4"
           value={draft.hours}
           onChange={e => setDraft(d => ({ ...d, hours: e.target.value }))} />
@@ -1308,7 +1308,7 @@ function PortalsTab({ callerEmail }) {
                   <th>Name</th>
                   <th>Fabric View</th>
                   <th>Restrict Col</th>
-                  <th>Hours</th>
+                  <th>Hrs Saved</th>
                   <th>Users</th>
                   <th>Status</th>
                   <th>Actions</th>
