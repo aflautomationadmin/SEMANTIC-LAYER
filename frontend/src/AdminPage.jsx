@@ -839,7 +839,7 @@ function Step1Info({ draft, setDraft, onDiscover, discovering, discoverError, is
         }
       </div>
       <div className="wiz-field">
-        <label className="field-label">Hours Saved <span className="field-hint">(optional - hours saved per download for the user)</span></label>
+        <label className="field-label">Hours Saved <span className="req">*</span></label>
         <input className="field-input" type="number" min="0" step="0.5" placeholder="e.g. 4"
           value={draft.hours}
           onChange={e => setDraft(d => ({ ...d, hours: e.target.value }))} />
@@ -1145,6 +1145,7 @@ function PortalWizard({ editing, onClose, onSaved, callerEmail }) {
     if (!draft.name.trim())      { setSaveError('Portal name is required.'); return }
     if (!draft.view_name.trim()) { setSaveError('Fabric view name is required.'); return }
     if (!isKpiInput && draft.columns.length === 0) { setSaveError('Discover columns first.'); return }
+    if (!isKpiInput && (draft.hours.trim() === '' || isNaN(Number(draft.hours)))) { setSaveError('Hours Saved is required.'); return }
 
     setSaving(true); setSaveError('')
     try {
