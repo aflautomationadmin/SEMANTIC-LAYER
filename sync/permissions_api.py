@@ -94,7 +94,7 @@ _FAB_PASS = os.environ.get('CUBEJS_DB_PASS', '')
 
 
 def _fab_conn():
-    """Open a new ODBC connection to Microsoft Fabric."""
+    """Open a brand-new ODBC connection to Microsoft Fabric."""
     return pyodbc.connect(
         f"Driver={{ODBC Driver 18 for SQL Server}};"
         f"Server={_FAB_HOST},{_FAB_PORT};Database={_FAB_DB};"
@@ -103,6 +103,68 @@ def _fab_conn():
         "Encrypt=yes;TrustServerCertificate=no;",
         timeout=120,
     )
+
+
+# ── Thread-local connection pool ──────────────────────────────────────────
+# Each Flask worker thread keeps its own persistent Fabric connection and
+# reuses it across requests, avoiding the expensive Azure AD auth handshake
+# (1-3 s) on every query.
+
+import queue as _queue
+
+_FAB_POOL_SIZE = _env_int('FAB_POOL_SIZE', 3, 1)
+_fab_pool: "_queue.Queue | None" = None
+_fab_pool_lock = _threading.Lock()
+
+
+def _ensure_fab_pool():
+    global _fab_pool
+    if _fab_pool is not None:
+        return _fab_pool
+    with _fab_pool_lock:
+        if _fab_pool is None:
+            q = _queue.Queue(maxsize=_FAB_POOL_SIZE)
+            for _ in range(_FAB_POOL_SIZE):
+                try:
+                    q.put(_fab_conn())
+                except Exception as exc:
+                    print(f"[pool] initial connect failed: {exc}", flush=True)
+            _fab_pool = q
+    return _fab_pool
+
+
+class _FabConn:
+    """Context manager — checks out a pooled Fabric connection.
+
+    On clean exit the connection is returned to the pool.
+    On error it is closed and a fresh connection is put back so the
+    pool size stays stable.
+    """
+    def __enter__(self):
+        pool = _ensure_fab_pool()
+        self._pool = pool
+        self._conn = pool.get(timeout=60)
+        return self._conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            # Connection may be broken — replace it
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            try:
+                self._pool.put(_fab_conn(), block=False)
+            except Exception as exc:
+                print(f"[pool] reconnect failed: {exc}", flush=True)
+        else:
+            try:
+                self._pool.put(self._conn, block=False)
+            except _queue.Full:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
 
 
 def _safe(val: str) -> str:
@@ -1047,9 +1109,7 @@ def get_kpi_inputs():
         values = {}
         rows_loaded = 0
 
-        conn = None
-        try:
-            conn = _fab_conn()
+        with _FabConn() as conn:
             cursor = conn.cursor()
             cursor.execute(_kpi_existing_sql(), [period])
             for category, kpi, target, actual, brand, _load_run_date in cursor.fetchall():
@@ -1060,9 +1120,6 @@ def get_kpi_inputs():
                         "actual": _format_kpi_number(actual),
                     }
                     rows_loaded += 1
-        finally:
-            if conn is not None:
-                conn.close()
 
         return jsonify({
             "status": "ok",
@@ -1128,9 +1185,7 @@ def save_kpi_inputs():
         if not brands:
             return jsonify({"error": "No brands found in KPI rows"}), 400
 
-        conn = None
-        try:
-            conn = _fab_conn()
+        with _FabConn() as conn:
             conn.autocommit = True
             cursor = conn.cursor()
             brand_placeholders = ','.join(['?'] * len(brands))
@@ -1152,9 +1207,6 @@ def save_kpi_inputs():
                     cursor.execute(insert_sql, row)
             cursor.execute(_kpi_verify_sql(), [load_run_date])
             verified = int(cursor.fetchone()[0])
-        finally:
-            if conn is not None:
-                conn.close()
 
         return jsonify({
             "status": "ok",
@@ -1202,15 +1254,14 @@ def portal_column_values():
             return jsonify({"values": []})
         if not _valid_view_name(view):
             return jsonify({"error": "view must be schema.ViewName format"}), 400
-        conn = _fab_conn()
-        rows = conn.execute(f"""
-            SELECT DISTINCT CAST([{column}] AS NVARCHAR(500)) AS val
-            FROM {view}
-            WHERE [{column}] IS NOT NULL
-              AND CAST([{column}] AS NVARCHAR(500)) != N''
-            ORDER BY val
-        """).fetchall()
-        conn.close()
+        with _FabConn() as conn:
+            rows = conn.execute(f"""
+                SELECT DISTINCT CAST([{column}] AS NVARCHAR(500)) AS val
+                FROM {view}
+                WHERE [{column}] IS NOT NULL
+                  AND CAST([{column}] AS NVARCHAR(500)) != N''
+                ORDER BY val
+            """).fetchall()
         return jsonify({"values": [r[0] for r in rows]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1353,18 +1404,17 @@ def portal_restrict_values(portal_id):
             return jsonify({"values": [], "values_by_column": {}, "columns": []})
 
         view_name = portal['view_name']
-        conn = _fab_conn()
         values_by_column = {}
-        for restrict_col in restrict_cols:
-            rows = conn.execute(f"""
-                SELECT DISTINCT CAST({restrict_col} AS NVARCHAR(500)) AS val
-                FROM {view_name}
-                WHERE {restrict_col} IS NOT NULL
-                  AND CAST({restrict_col} AS NVARCHAR(500)) != N''
-                ORDER BY val
-            """).fetchall()
-            values_by_column[restrict_col] = [r[0] for r in rows]
-        conn.close()
+        with _FabConn() as conn:
+            for restrict_col in restrict_cols:
+                rows = conn.execute(f"""
+                    SELECT DISTINCT CAST({restrict_col} AS NVARCHAR(500)) AS val
+                    FROM {view_name}
+                    WHERE {restrict_col} IS NOT NULL
+                      AND CAST({restrict_col} AS NVARCHAR(500)) != N''
+                    ORDER BY val
+                """).fetchall()
+                values_by_column[restrict_col] = [r[0] for r in rows]
         first_col = restrict_cols[0] if restrict_cols else ""
         return jsonify({
             "values": values_by_column.get(first_col, []),
@@ -1385,21 +1435,20 @@ def discover_columns(portal_id):
             return jsonify({"error": "view must be schema.ViewName format"}), 400
 
         NUMERIC_TYPES = {-7, -6, -5, 2, 3, 4, 5, 6, 7, 8}  # pyodbc SQL type codes for numeric
-        conn   = _fab_conn()
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT TOP 0 * FROM {view}")
-        columns = [{
-            "key":      d[0],
-            "label":    d[0].replace("_", " ").title(),
-            "show":     True,
-            "currency": False,
-            "is_numeric": d[1] in NUMERIC_TYPES,
-            "aggregate": "sum" if d[1] in NUMERIC_TYPES else "group",
-            "filter":   "dropdown" if d[1] not in NUMERIC_TYPES else "none",
-            "type":     "dropdown" if d[1] not in NUMERIC_TYPES else "none",
-            "group":    "Other",
-        } for d in cursor.description]
-        conn.close()
+        with _FabConn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT TOP 0 * FROM {view}")
+            columns = [{
+                "key":      d[0],
+                "label":    d[0].replace("_", " ").title(),
+                "show":     True,
+                "currency": False,
+                "is_numeric": d[1] in NUMERIC_TYPES,
+                "aggregate": "sum" if d[1] in NUMERIC_TYPES else "group",
+                "filter":   "dropdown" if d[1] not in NUMERIC_TYPES else "none",
+                "type":     "dropdown" if d[1] not in NUMERIC_TYPES else "none",
+                "group":    "Other",
+            } for d in cursor.description]
         return jsonify({"columns": columns})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1551,17 +1600,13 @@ def data_load():
             from_date, to_date, filters, text_filters,
             restrict_cols, restrict_map, date_col, allowed_cols
         )
-        conn = _fab_conn()
+        with _FabConn() as conn:
+            if count_only:
+                row = conn.execute(_portal_count_sql(config, view_name, where)).fetchone()
+                return jsonify({'count': row[0]})
 
-        if count_only:
-            row = conn.execute(_portal_count_sql(config, view_name, where)).fetchone()
-            conn.close()
-            return jsonify({'count': row[0]})
-
-        sql = _portal_select_sql(config, view_name, where, limit=limit)
-
-        df = pd.read_sql(sql, conn)
-        conn.close()
+            sql = _portal_select_sql(config, view_name, where, limit=limit)
+            df = pd.read_sql(sql, conn)
 
         date_col_upper = (date_col or '').upper()
         if date_col_upper and date_col_upper in df.columns:
@@ -1608,24 +1653,22 @@ def data_values():
             from_date, to_date, {}, {},
             restrict_cols, restrict_map, date_col, allowed_cols
         )
-        conn = _fab_conn()
+        with _FabConn() as conn:
+            rows = conn.execute(f"""
+                SELECT DISTINCT CAST({column} AS NVARCHAR(500)) AS val
+                FROM {view_name}
+                WHERE {where}
+                  AND {column} IS NOT NULL
+                  AND CAST({column} AS NVARCHAR(500)) != N''
+                ORDER BY val
+            """).fetchall()
 
-        rows = conn.execute(f"""
-            SELECT DISTINCT CAST({column} AS NVARCHAR(500)) AS val
-            FROM {view_name}
-            WHERE {where}
-              AND {column} IS NOT NULL
-              AND CAST({column} AS NVARCHAR(500)) != N''
-            ORDER BY val
-        """).fetchall()
+            blank_cnt = conn.execute(f"""
+                SELECT COUNT(*) FROM {view_name}
+                WHERE {where}
+                  AND ({column} IS NULL OR CAST({column} AS NVARCHAR(500)) = N'')
+            """).fetchone()[0]
 
-        blank_cnt = conn.execute(f"""
-            SELECT COUNT(*) FROM {view_name}
-            WHERE {where}
-              AND ({column} IS NULL OR CAST({column} AS NVARCHAR(500)) = N'')
-        """).fetchone()[0]
-
-        conn.close()
         return jsonify({'values': [r[0] for r in rows], 'has_blank': blank_cnt > 0})
 
     except ValueError as e:
@@ -1728,10 +1771,8 @@ def _write_cursor_to_zip(cursor, export_id, ctx, tmp_path):
 
 
 def _write_export_zip(export_id, ctx):
-    conn = None
     tmp_path = None
-    try:
-        conn = _fab_conn()
+    with _FabConn() as conn:
         cursor = conn.cursor()
         cursor.arraysize = EXPORT_FETCH_BATCH_SIZE
         _set_export_progress(export_id, status='querying', rows=0, files=0)
@@ -1743,9 +1784,6 @@ def _write_export_zip(export_id, ctx):
             tmp_path = tmp.name
 
         total_rows, part = _write_cursor_to_zip(cursor, export_id, ctx, tmp_path)
-    finally:
-        if conn is not None:
-            conn.close()
 
     return tmp_path, total_rows, part
 
