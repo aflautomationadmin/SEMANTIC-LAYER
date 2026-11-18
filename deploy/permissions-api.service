@@ -5,7 +5,7 @@ After=network.target
 [Service]
 User=appuser
 WorkingDirectory=/home/appuser/semantic-layer/sync
-ExecStart=/home/appuser/semantic-layer/env/bin/gunicorn permissions_api:app --workers 3 --threads 2 --worker-class gthread --bind 0.0.0.0:5001 --timeout 300 --keep-alive 5
+ExecStart=/home/appuser/semantic-layer/env/bin/gunicorn permissions_api:app --workers 1 --threads 6 --worker-class gthread --bind 0.0.0.0:5001 --timeout 300 --keep-alive 5
 Restart=always
 
 [Install]
