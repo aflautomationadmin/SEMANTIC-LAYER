@@ -222,6 +222,10 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
 
   const loadAbortRef = useRef(null)
 
+  useEffect(() => {
+    return () => { if (loadAbortRef.current) loadAbortRef.current.abort() }
+  }, [])
+
   const cancelLoad = useCallback(() => {
     if (loadAbortRef.current) loadAbortRef.current.abort()
   }, [])
@@ -242,7 +246,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         else if (type === 'text' && val && val.trim()) textFilters[key] = val.trim()
       })
 
-      const dataRequest = fabricLoad('/data/load', {
+      const result = await fabricLoad('/data/load', {
         portal_id:       portal.id,
         from_date:       fromDate,
         to_date:         toDate,
@@ -250,21 +254,10 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
         text_filters:    textFilters,
         restrict_values: restrictValues,
         limit:           50000,
+        include_count:   true,
       }, controller.signal)
-
-      const countRequest = fabricLoad('/data/load', {
-        portal_id: portal.id,
-        from_date: fromDate,
-        to_date: toDate,
-        filters: dropdownFilters,
-        text_filters: textFilters,
-        restrict_values: restrictValues,
-        count_only: true,
-      }, controller.signal)
-
-      const [result, countResult] = await Promise.all([dataRequest, countRequest])
       const data = result.data || []
-      const fullCount = Number(countResult.count ?? data.length)
+      const fullCount = Number(result.count ?? data.length)
       setRows(data)
       setLoaded(true)
       setTotalCount(fullCount)
@@ -524,11 +517,11 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
             <span className="stat">Page <strong>{page}</strong> / <strong>{totalPages || 1}</strong></span>
             {hasQty && (<>
               <span className="sdot">·</span>
-              <span className="stat">Qty: <strong>{rows.reduce((s, r) => s + (Number(r['QUANTITY']) || 0), 0).toLocaleString('en-IN')}</strong></span>
+              <span className="stat">Qty{displayTotalRows > rows.length ? ' (preview)' : ''}: <strong>{rows.reduce((s, r) => s + (Number(r['QUANTITY']) || 0), 0).toLocaleString('en-IN')}</strong></span>
             </>)}
             {hasNet && (<>
               <span className="sdot">·</span>
-              <span className="stat">Net: <strong>₹{rows.reduce((s, r) => s + (Number(r['NETAMT']) || 0), 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</strong></span>
+              <span className="stat">Net{displayTotalRows > rows.length ? ' (preview)' : ''}: <strong>₹{rows.reduce((s, r) => s + (Number(r['NETAMT']) || 0), 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</strong></span>
             </>)}
           </div>
         )}

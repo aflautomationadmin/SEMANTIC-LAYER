@@ -143,7 +143,10 @@ class _FabConn:
     def __enter__(self):
         pool = _ensure_fab_pool()
         self._pool = pool
-        self._conn = pool.get(timeout=60)
+        try:
+            self._conn = pool.get(timeout=60)
+        except _queue.Empty:
+            raise RuntimeError("All Fabric connections are busy — please retry in a moment")
         return self._conn
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -1273,20 +1276,22 @@ def list_portals():
     try:
         with _db_lock:
             con  = get_con()
-            rows = con.execute(
-                "SELECT id, name, description, view_name, config, created_at, is_active FROM portals ORDER BY created_at"
-            ).fetchall()
+            rows = con.execute("""
+                SELECT p.id, p.name, p.description, p.view_name, p.config,
+                       p.created_at, p.is_active, COUNT(pa.email) AS user_count
+                FROM portals p
+                LEFT JOIN portal_access pa ON pa.portal_id = p.id
+                GROUP BY p.id, p.name, p.description, p.view_name, p.config, p.created_at, p.is_active
+                ORDER BY p.created_at
+            """).fetchall()
             portals = []
             for r in rows:
                 cfg = json.loads(r[4])
-                user_count = con.execute(
-                    "SELECT COUNT(*) FROM portal_access WHERE portal_id=?", [r[0]]
-                ).fetchone()[0]
                 portals.append({
                     "id": r[0], "name": r[1], "description": r[2],
                     "view_name": r[3], "config": cfg,
                     "created_at": str(r[5]), "is_active": r[6],
-                    "user_count": user_count,
+                    "user_count": r[7],
                     "restrict_col": cfg.get("restrict_col") or "",
                     "restrict_cols": _portal_restrict_cols(cfg),
                 })
@@ -1408,10 +1413,10 @@ def portal_restrict_values(portal_id):
         with _FabConn() as conn:
             for restrict_col in restrict_cols:
                 rows = conn.execute(f"""
-                    SELECT DISTINCT CAST({restrict_col} AS NVARCHAR(500)) AS val
+                    SELECT DISTINCT CAST([{restrict_col}] AS NVARCHAR(500)) AS val
                     FROM {view_name}
-                    WHERE {restrict_col} IS NOT NULL
-                      AND CAST({restrict_col} AS NVARCHAR(500)) != N''
+                    WHERE [{restrict_col}] IS NOT NULL
+                      AND CAST([{restrict_col}] AS NVARCHAR(500)) != N''
                     ORDER BY val
                 """).fetchall()
                 values_by_column[restrict_col] = [r[0] for r in rows]
@@ -1585,6 +1590,7 @@ def data_load():
         restrict_values = body.get('restrict_values', [])
         limit           = min(int(body.get('limit', 50_000)), 100_000)
         count_only      = body.get('count_only', False)
+        include_count   = body.get('include_count', False)
 
         portal      = _load_portal(portal_id)
         config      = portal['config']
@@ -1608,12 +1614,20 @@ def data_load():
             sql = _portal_select_sql(config, view_name, where, limit=limit)
             df = pd.read_sql(sql, conn)
 
+            total_count = None
+            if include_count:
+                row = conn.execute(_portal_count_sql(config, view_name, where)).fetchone()
+                total_count = row[0]
+
         date_col_upper = (date_col or '').upper()
         if date_col_upper and date_col_upper in df.columns:
             df[date_col_upper] = df[date_col_upper].astype(str)
         df = df.fillna('')
 
-        return jsonify({'data': df.to_dict('records')})
+        resp = {'data': df.to_dict('records')}
+        if total_count is not None:
+            resp['count'] = total_count
+        return jsonify(resp)
 
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
@@ -1655,18 +1669,18 @@ def data_values():
         )
         with _FabConn() as conn:
             rows = conn.execute(f"""
-                SELECT DISTINCT CAST({column} AS NVARCHAR(500)) AS val
+                SELECT DISTINCT CAST([{column}] AS NVARCHAR(500)) AS val
                 FROM {view_name}
                 WHERE {where}
-                  AND {column} IS NOT NULL
-                  AND CAST({column} AS NVARCHAR(500)) != N''
+                  AND [{column}] IS NOT NULL
+                  AND CAST([{column}] AS NVARCHAR(500)) != N''
                 ORDER BY val
             """).fetchall()
 
             blank_cnt = conn.execute(f"""
                 SELECT COUNT(*) FROM {view_name}
                 WHERE {where}
-                  AND ({column} IS NULL OR CAST({column} AS NVARCHAR(500)) = N'')
+                  AND ([{column}] IS NULL OR CAST([{column}] AS NVARCHAR(500)) = N'')
             """).fetchone()[0]
 
         return jsonify({'values': [r[0] for r in rows], 'has_blank': blank_cnt > 0})
@@ -1685,7 +1699,10 @@ def _export_context(args):
     restrict_values = args.getlist('restrict_value')
     restrict_values_json = args.get('restrict_values', '')
     if restrict_values_json:
-        restrict_values = json.loads(restrict_values_json)
+        try:
+            restrict_values = json.loads(restrict_values_json)
+        except json.JSONDecodeError:
+            raise ValueError('Invalid restrict_values JSON')
 
     portal = _load_portal(portal_id)
     config = portal['config']
@@ -1850,9 +1867,10 @@ def export_file():
         try:
             if os.path.exists(path):
                 os.remove(path)
-            _set_export_progress(export_id, status='done')
         except Exception:
             pass
+        with _export_progress_lock:
+            _export_progress.pop(export_id, None)
 
     return response
 
@@ -1872,7 +1890,10 @@ def export_data():
         restrict_values = request.args.getlist('restrict_value')
         restrict_values_json = request.args.get('restrict_values', '')
         if restrict_values_json:
-            restrict_values = json.loads(restrict_values_json)
+            try:
+                restrict_values = json.loads(restrict_values_json)
+            except json.JSONDecodeError:
+                return jsonify({'error': 'Invalid restrict_values JSON'}), 400
 
         portal       = _load_portal(portal_id)
         config       = portal['config']

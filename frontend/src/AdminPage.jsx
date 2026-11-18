@@ -1145,7 +1145,7 @@ function PortalWizard({ editing, onClose, onSaved, callerEmail }) {
     if (!draft.name.trim())      { setSaveError('Portal name is required.'); return }
     if (!draft.view_name.trim()) { setSaveError('Fabric view name is required.'); return }
     if (!isKpiInput && draft.columns.length === 0) { setSaveError('Discover columns first.'); return }
-    if (!isKpiInput && (draft.hours.trim() === '' || isNaN(Number(draft.hours)))) { setSaveError('Hours Saved is required.'); return }
+    if (!isKpiInput && (draft.hours.trim() === '' || isNaN(Number(draft.hours)) || Number(draft.hours) < 0)) { setSaveError('Hours Saved must be a positive number.'); return }
 
     setSaving(true); setSaveError('')
     try {

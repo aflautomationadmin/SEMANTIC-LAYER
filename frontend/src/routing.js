@@ -21,7 +21,7 @@ export function adminPath() {
 }
 
 export function portalPath(portal) {
-  const segment = TYPE_SEGMENT[portal?.config?.type] || 'download'
+  const segment = TYPE_SEGMENT[portal?.config?.type] || 'portal'
   return `${basePath()}${segment}/${portal.id}`
 }
 
