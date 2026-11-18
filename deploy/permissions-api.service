@@ -1,0 +1,12 @@
+[Unit]
+Description=Arvind Permissions API
+After=network.target
+
+[Service]
+User=appuser
+WorkingDirectory=/home/appuser/semantic-layer/sync
+ExecStart=/home/appuser/semantic-layer/env/bin/gunicorn permissions_api:app --workers 3 --threads 2 --worker-class gthread --bind 0.0.0.0:5001 --timeout 300 --keep-alive 5
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
