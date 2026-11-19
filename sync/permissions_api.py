@@ -50,6 +50,8 @@ EXPORT_ZIP_COMPRESSION = os.environ.get('EXPORT_ZIP_COMPRESSION', 'deflated').st
 EXPORT_ZIP_COMPRESSLEVEL = _env_int('EXPORT_ZIP_COMPRESSLEVEL', 1, 0)
 
 
+_export_slots = _threading.BoundedSemaphore(_env_int('EXPORT_MAX_CONCURRENT', 2, 1))
+
 EXPORT_TMP_DIR = os.environ.get('EXPORT_TMP_DIR', '/mnt/exports')
 os.makedirs(EXPORT_TMP_DIR, exist_ok=True)
 
@@ -102,6 +104,7 @@ def _fab_conn():
         f"UID={_FAB_USER};PWD={_FAB_PASS};"
         "Encrypt=yes;TrustServerCertificate=no;",
         timeout=120,
+        autocommit=True,
     )
 
 
@@ -118,6 +121,7 @@ _fab_pool_lock = _threading.Lock()
 
 
 def _ensure_fab_pool():
+    """Pool of N slots; a slot is a live connection or None (connect on demand)."""
     global _fab_pool
     if _fab_pool is not None:
         return _fab_pool
@@ -125,10 +129,7 @@ def _ensure_fab_pool():
         if _fab_pool is None:
             q = _queue.Queue(maxsize=_FAB_POOL_SIZE)
             for _ in range(_FAB_POOL_SIZE):
-                try:
-                    q.put(_fab_conn())
-                except Exception as exc:
-                    print(f"[pool] initial connect failed: {exc}", flush=True)
+                q.put(None)
             _fab_pool = q
     return _fab_pool
 
@@ -136,52 +137,61 @@ def _ensure_fab_pool():
 class _FabConn:
     """Context manager — checks out a pooled Fabric connection.
 
-    On clean exit the connection is returned to the pool.
-    On error it is closed and a fresh connection is put back so the
-    pool size stays stable.
+    The slot is always returned, so the pool can never shrink: a healthy
+    connection goes back as-is, a broken one is closed and its slot goes back
+    empty and reconnects on the next checkout.
     """
     def __enter__(self):
         pool = _ensure_fab_pool()
         self._pool = pool
         try:
-            self._conn = pool.get(timeout=60)
+            conn = pool.get(timeout=60)
         except _queue.Empty:
             raise RuntimeError("All Fabric connections are busy — please retry in a moment")
-        return self._conn
+        if conn is None:
+            try:
+                conn = _fab_conn()
+            except Exception:
+                pool.put(None)
+                raise
+        self._conn = conn
+        return conn
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None:
-            # Connection may be broken — replace it
-            try:
-                self._conn.close()
-            except Exception:
-                pass
-            try:
-                self._pool.put(_fab_conn(), block=False)
-            except Exception as exc:
-                print(f"[pool] reconnect failed: {exc}", flush=True)
-        else:
+        conn = self._conn
+        healthy = exc_type is None or not issubclass(exc_type, pyodbc.Error)
+        if healthy:
             # Fabric reads a fixed snapshot while a transaction is open; end it so
             # the next checkout sees fresh data instead of the pooled snapshot.
             try:
-                self._conn.rollback()
+                conn.rollback()
             except Exception:
-                try:
-                    self._conn.close()
-                except Exception:
-                    pass
-                try:
-                    self._conn = _fab_conn()
-                except Exception as exc:
-                    print(f"[pool] reconnect failed: {exc}", flush=True)
-                    return
+                healthy = False
+        if not healthy:
             try:
-                self._pool.put(self._conn, block=False)
-            except _queue.Full:
-                try:
-                    self._conn.close()
-                except Exception:
-                    pass
+                conn.close()
+            except Exception:
+                pass
+            conn = None
+        self._pool.put(conn)
+
+
+class BadInput(ValueError):
+    """Client sent an invalid parameter; endpoints answer HTTP 400."""
+
+
+def _check_date(val, name):
+    try:
+        datetime.strptime(str(val), '%Y-%m-%d')
+    except ValueError:
+        raise BadInput(f'{name} must be a date in YYYY-MM-DD format')
+
+
+def _parse_restrict_json(text):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        raise BadInput('Invalid restrict_values JSON')
 
 
 def _safe(val: str) -> str:
@@ -524,6 +534,8 @@ def _build_where(from_date, to_date, filters, text_filters,
     date_col = (date_col or '').upper()
     conds = []
     if date_col and from_date and to_date:
+        _check_date(from_date, 'from_date')
+        _check_date(to_date, 'to_date')
         conds.extend([
             f"CAST([{date_col}] AS DATE) >= '{_safe(from_date)}'",
             f"CAST([{date_col}] AS DATE) <= '{_safe(to_date)}'",
@@ -1643,6 +1655,8 @@ def data_load():
             resp['count'] = total_count
         return jsonify(resp)
 
+    except BadInput as e:
+        return jsonify({'error': str(e)}), 400
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
     except Exception as e:
@@ -1664,7 +1678,7 @@ def data_values():
         restrict_values = request.args.getlist('restrict_value')
         restrict_values_json = request.args.get('restrict_values', '')
         if restrict_values_json:
-            restrict_values = json.loads(restrict_values_json)
+            restrict_values = _parse_restrict_json(restrict_values_json)
 
         portal      = _load_portal(portal_id)
         config      = portal['config']
@@ -1699,6 +1713,8 @@ def data_values():
 
         return jsonify({'values': [r[0] for r in rows], 'has_blank': blank_cnt > 0})
 
+    except BadInput as e:
+        return jsonify({'error': str(e)}), 400
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
     except Exception as e:
@@ -1803,18 +1819,27 @@ def _write_cursor_to_zip(cursor, export_id, ctx, tmp_path):
 
 def _write_export_zip(export_id, ctx):
     tmp_path = None
-    with _FabConn() as conn:
-        cursor = conn.cursor()
-        cursor.arraysize = EXPORT_FETCH_BATCH_SIZE
-        _set_export_progress(export_id, status='querying', rows=0, files=0)
-        cursor.execute(ctx['sql'])
-        _set_export_progress(export_id, status='extracting', rows=0, files=1)
+    # Exports can run for minutes, so they use their own connection instead of a
+    # pooled one, and are capped so they cannot starve interactive requests.
+    with _export_slots:
+        conn = _fab_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.arraysize = EXPORT_FETCH_BATCH_SIZE
+            _set_export_progress(export_id, status='querying', rows=0, files=0)
+            cursor.execute(ctx['sql'])
+            _set_export_progress(export_id, status='extracting', rows=0, files=1)
 
-        with tempfile.NamedTemporaryFile(prefix=f"{ctx['portal_id']}_", suffix='.zip',
-                                         dir=EXPORT_TMP_DIR, delete=False) as tmp:
-            tmp_path = tmp.name
+            with tempfile.NamedTemporaryFile(prefix=f"{ctx['portal_id']}_", suffix='.zip',
+                                             dir=EXPORT_TMP_DIR, delete=False) as tmp:
+                tmp_path = tmp.name
 
-        total_rows, part = _write_cursor_to_zip(cursor, export_id, ctx, tmp_path)
+            total_rows, part = _write_cursor_to_zip(cursor, export_id, ctx, tmp_path)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return tmp_path, total_rows, part
 
@@ -1966,6 +1991,8 @@ def export_data():
 
         return response
 
+    except BadInput as e:
+        return jsonify({'error': str(e)}), 400
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
     except Exception as e:

@@ -293,11 +293,14 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
 
       let lastRows = -1
       let unchangedPolls = 0
+      let unknownPolls = 0
       while (true) {
         await new Promise(resolve => setTimeout(resolve, 1500))
         const statusRes = await fetch(`/permissions-api/export/status?export_id=${encodeURIComponent(exportId)}`)
         const status = await statusRes.json()
         if (!statusRes.ok) throw new Error(status.error || `Server error ${statusRes.status}`)
+        unknownPolls = status.status === 'unknown' ? unknownPolls + 1 : 0
+        if (unknownPolls >= 5) throw new Error('Export was interrupted (the server may have restarted). Please try again.')
         const statusRows = Number(status.rows || 0)
         if (status.status === 'extracting' || status.status === 'querying') {
           unchangedPolls = statusRows === lastRows ? unchangedPolls + 1 : 0
