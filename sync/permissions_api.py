@@ -4,7 +4,7 @@ Multi-portal: admins can register any Fabric view as a download portal with
 its own column config and per-user access control.
 Runs on port 5001, proxied by Apache at /permissions-api/
 """
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 import csv
 import duckdb
@@ -1893,25 +1893,40 @@ def export_file():
     if not path or not os.path.exists(path):
         return jsonify({'error': 'export file is missing'}), 404
 
-    response = send_file(
-        path,
-        mimetype='application/zip',
-        as_attachment=True,
-        download_name=status.get('filename', f'{export_id}.zip'),
-        max_age=0,
-    )
+    return _zip_response(path, status.get('filename', f'{export_id}.zip'), export_id)
 
-    @response.call_on_close
-    def cleanup_export_file():
+
+def _zip_response(path, filename, export_id):
+    """Stream a finished export zip, then delete it and its progress entry.
+
+    send_file + call_on_close never fires under gunicorn (direct passthrough),
+    which leaked every zip until the next restart.
+    """
+    size = os.path.getsize(path)
+    safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', filename)
+
+    def stream():
         try:
-            if os.path.exists(path):
-                os.remove(path)
-        except Exception:
-            pass
-        with _export_progress_lock:
-            _export_progress.pop(export_id, None)
+            with open(path, 'rb') as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+            with _export_progress_lock:
+                _export_progress.pop(export_id, None)
 
-    return response
+    return Response(stream(), mimetype='application/zip', headers={
+        'Content-Disposition': f'attachment; filename="{safe_name}"',
+        'Content-Length': str(size),
+        'Cache-Control': 'no-store',
+    })
 
 
 @app.route('/export', methods=['GET'])
@@ -1972,24 +1987,7 @@ def export_data():
 
         _set_export_progress(export_id, status='sending', rows=total_rows if 'total_rows' in locals() else 0, files=part if 'part' in locals() else 0)
 
-        response = send_file(
-            tmp_path,
-            mimetype='application/zip',
-            as_attachment=True,
-            download_name=f'{file_stem}.zip',
-            max_age=0,
-        )
-
-        @response.call_on_close
-        def cleanup_export_file():
-            try:
-                if tmp_path and os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-                _set_export_progress(export_id, status='done')
-            except Exception:
-                pass
-
-        return response
+        return _zip_response(tmp_path, f'{file_stem}.zip', export_id)
 
     except BadInput as e:
         return jsonify({'error': str(e)}), 400
