@@ -161,6 +161,20 @@ class _FabConn:
             except Exception as exc:
                 print(f"[pool] reconnect failed: {exc}", flush=True)
         else:
+            # Fabric reads a fixed snapshot while a transaction is open; end it so
+            # the next checkout sees fresh data instead of the pooled snapshot.
+            try:
+                self._conn.rollback()
+            except Exception:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                try:
+                    self._conn = _fab_conn()
+                except Exception as exc:
+                    print(f"[pool] reconnect failed: {exc}", flush=True)
+                    return
             try:
                 self._pool.put(self._conn, block=False)
             except _queue.Full:
