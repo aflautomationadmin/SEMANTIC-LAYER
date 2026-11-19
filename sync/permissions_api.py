@@ -4,7 +4,7 @@ Multi-portal: admins can register any Fabric view as a download portal with
 its own column config and per-user access control.
 Runs on port 5001, proxied by Apache at /permissions-api/
 """
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, g, jsonify, request
 from flask_cors import CORS
 import csv
 import duckdb
@@ -818,18 +818,134 @@ def _is_admin(email: str) -> bool:
         return False
 
 
-def _require_admin():
-    """
-    Check caller_email from request body or query param.
-    Returns a 403 response tuple if the caller is not an admin, otherwise None.
-    """
+# ── Authentication (Microsoft Entra ID sign-in token) ─────────────────────
+# The browser sends the user's MSAL ID token as "Authorization: Bearer <jwt>".
+# AUTH_MODE: off = ignore tokens, warn = verify and use tokens but still accept
+# unauthenticated requests (logged), enforce = reject requests without a valid token.
+try:
+    import jwt as _jwt
+    from jwt import PyJWKClient as _PyJWKClient
+except ImportError:
+    _jwt = None
+
+AUTH_MODE = os.environ.get('AUTH_MODE', 'warn').strip().lower()
+_AZ_TENANT = os.environ.get('AZURE_TENANT_ID', '').strip()
+_AZ_CLIENT = os.environ.get('AZURE_CLIENT_ID', '').strip()
+_jwks_client = (
+    _PyJWKClient(f"https://login.microsoftonline.com/{_AZ_TENANT}/discovery/v2.0/keys",
+                 cache_keys=True, lifespan=3600)
+    if _jwt and _AZ_TENANT and _AZ_CLIENT else None
+)
+if AUTH_MODE != 'off' and _jwks_client is None:
+    print("[auth] WARNING: token verification unavailable (PyJWT or AZURE_TENANT_ID/"
+          "AZURE_CLIENT_ID missing)", flush=True)
+_auth_seen = set()
+
+
+class AccessDenied(ValueError):
+    """Verified user has no access to the requested portal; endpoints answer HTTP 403."""
+
+
+def _verify_token(token: str):
+    claims = _jwt.decode(
+        token,
+        _jwks_client.get_signing_key_from_jwt(token).key,
+        algorithms=['RS256'],
+        audience=_AZ_CLIENT,
+        issuer=f"https://login.microsoftonline.com/{_AZ_TENANT}/v2.0",
+        options={'require': ['exp', 'iss', 'aud']},
+    )
+    email = (claims.get('preferred_username') or claims.get('email')
+             or claims.get('upn') or '').strip().lower()
+    return email or None
+
+
+@app.before_request
+def _authenticate():
+    g.user_email = None
+    if request.method == 'OPTIONS' or AUTH_MODE == 'off':
+        return None
+    header = request.headers.get('Authorization', '')
+    if header.startswith('Bearer ') and _jwks_client is not None:
+        try:
+            g.user_email = _verify_token(header[7:].strip())
+            if g.user_email not in _auth_seen:
+                _auth_seen.add(g.user_email)
+                print(f"[auth] verified {g.user_email}", flush=True)
+        except Exception as exc:
+            print(f"[auth] token rejected: {type(exc).__name__}: {exc}", flush=True)
+    if g.user_email is None:
+        if AUTH_MODE == 'enforce':
+            return jsonify({"error": "Authentication required"}), 401
+        print(f"[auth] unauthenticated {request.method} {request.path}", flush=True)
+    return None
+
+
+@app.route('/auth/whoami', methods=['GET'])
+def auth_whoami():
+    return jsonify({"email": g.get('user_email'), "mode": AUTH_MODE,
+                    "verification": _jwks_client is not None})
+
+
+def _caller_email():
+    """Verified email; outside enforce mode, the legacy self-asserted caller_email."""
+    if g.get('user_email'):
+        return g.user_email
+    if AUTH_MODE == 'enforce':
+        return None
     if request.method in ('POST', 'PUT', 'PATCH'):
         body = request.get_json(silent=True) or {}
-        email = body.get('caller_email', '') or request.args.get('caller_email', '')
-    else:
-        email = request.args.get('caller_email', '')
+        return body.get('caller_email', '') or request.args.get('caller_email', '')
+    return request.args.get('caller_email', '')
+
+
+def _require_admin(allow_unverified=False):
+    """
+    Returns a 403 response tuple unless the caller is an admin, otherwise None.
+    allow_unverified: read-only admin screens still work for requests that carry no
+    token while AUTH_MODE is not enforce (so the rollout cannot lock anyone out).
+    """
+    email = _caller_email()
+    if not email and allow_unverified and AUTH_MODE != 'enforce':
+        return None
     if not _is_admin(email):
         return jsonify({"error": "Admin access required"}), 403
+    return None
+
+
+def _authorize_portal(portal_id):
+    """
+    Row restrictions for the verified caller on this portal: [] for admins, the stored
+    list/dict for granted users. Returns None when the caller is unverified (non-enforce
+    rollout only). Raises AccessDenied if a verified user has no access to the portal.
+    """
+    email = g.get('user_email')
+    if not email:
+        return None
+    if _is_admin(email):
+        return []
+    with _db_lock:
+        row = get_con().execute("""
+            SELECT pa.restrict_values FROM portal_access pa
+            JOIN portals p ON p.id = pa.portal_id
+            WHERE p.is_active=TRUE AND pa.portal_id=? AND LOWER(pa.email)=?
+        """, [portal_id, email]).fetchone()
+    if row is None:
+        raise AccessDenied('You do not have access to this portal')
+    return json.loads(row[0]) if row[0] else []
+
+
+def _server_restrictions(portal_id, client_values):
+    """Verified callers get their restrictions from the DB; the client value is ignored."""
+    stored = _authorize_portal(portal_id)
+    return client_values if stored is None else stored
+
+
+def _portal_access_error(portal_id):
+    try:
+        _authorize_portal(portal_id)
+    except AccessDenied as e:
+        return jsonify({"error": str(e)}), 403
     return None
 
 
@@ -955,6 +1071,8 @@ def init_db():
 
 @app.route('/permissions', methods=['GET'])
 def get_permissions():
+    err = _require_admin(allow_unverified=True)
+    if err: return err
     try:
         with _db_lock:
             con = get_con()
@@ -975,7 +1093,7 @@ def check_access():
     Returns { allowed: bool, is_admin: bool, brands: [...] }
     """
     try:
-        email = request.args.get('email', '').strip().lower()
+        email = (g.get('user_email') or request.args.get('email', '')).strip().lower()
         if not email:
             return jsonify({"allowed": False}), 400
 
@@ -1036,13 +1154,14 @@ def insert_log():
         body = request.get_json()
         if not body:
             return jsonify({"error": "No data"}), 400
+        log_email = g.get('user_email') or body.get('email', '')
         with _db_lock:
             con = get_con()
             next_id = con.execute("SELECT COALESCE(MAX(id),0)+1 FROM audit_logs").fetchone()[0]
             now     = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
             con.execute("INSERT INTO audit_logs VALUES (?,?,?,?,?,?)", [
                 next_id, now,
-                body.get('email', ''), body.get('name', ''),
+                log_email, body.get('name', ''),
                 body.get('action', ''), json.dumps(body.get('details', {})),
             ])
         return jsonify({"status": "ok"})
@@ -1052,6 +1171,8 @@ def insert_log():
 
 @app.route('/logs', methods=['GET'])
 def get_logs():
+    err = _require_admin(allow_unverified=True)
+    if err: return err
     try:
         limit     = int(request.args.get('limit', 200))
         offset    = int(request.args.get('offset', 0))
@@ -1091,6 +1212,8 @@ def get_logs():
 
 @app.route('/logs', methods=['DELETE'])
 def clear_logs():
+    err = _require_admin()
+    if err: return err
     try:
         with _db_lock:
             get_con().execute("DELETE FROM audit_logs")
@@ -1106,6 +1229,8 @@ def get_kpi_template():
     """Return the FY27 KPI Tracker PVH input template."""
     try:
         portal_id = request.args.get('portal_id', 'fy27-kpi-tracker-pvh')
+        err = _portal_access_error(portal_id)
+        if err: return err
         portal = _load_portal(portal_id)
         if (portal.get('config') or {}).get('type') != 'kpi_input':
             return jsonify({"error": "Portal is not a KPI input portal"}), 400
@@ -1125,6 +1250,8 @@ def get_kpi_inputs():
     """Return existing KPI targets for a month, keyed by template row."""
     try:
         portal_id = request.args.get('portal_id', 'fy27-kpi-tracker-pvh')
+        err = _portal_access_error(portal_id)
+        if err: return err
         period = _clean_kpi_month(request.args.get('period', ''))
 
         if not period:
@@ -1174,6 +1301,8 @@ def save_kpi_inputs():
     try:
         body = request.get_json() or {}
         portal_id = body.get('portal_id', 'fy27-kpi-tracker-pvh')
+        err = _portal_access_error(portal_id)
+        if err: return err
         period = str(body.get('period', '')).strip()
         entries = body.get('entries') or []
 
@@ -1276,6 +1405,8 @@ def portal_column_values():
     Used by the portal wizard before a portal_id exists.
     Params: view (e.g. ui.V_MY_VIEW), column (e.g. BRAND)
     """
+    err = _require_admin(allow_unverified=True)
+    if err: return err
     try:
         view   = request.args.get('view',   '').strip()
         column = request.args.get('column', '').strip().upper()
@@ -1299,6 +1430,8 @@ def portal_column_values():
 @app.route('/portals', methods=['GET'])
 def list_portals():
     """List all portals (admin use)."""
+    err = _require_admin(allow_unverified=True)
+    if err: return err
     try:
         with _db_lock:
             con  = get_con()
@@ -1424,6 +1557,8 @@ def delete_portal(portal_id):
 @app.route('/portals/<portal_id>/restrict-values', methods=['GET'])
 def portal_restrict_values(portal_id):
     """Return distinct values for configured restriction columns."""
+    err = _require_admin(allow_unverified=True)
+    if err: return err
     try:
         portal      = _load_portal(portal_id)
         config      = portal['config']
@@ -1460,6 +1595,8 @@ def portal_restrict_values(portal_id):
 @app.route('/portals/<portal_id>/discover', methods=['GET'])
 def discover_columns(portal_id):
     """Auto-detect columns from a Fabric view."""
+    err = _require_admin(allow_unverified=True)
+    if err: return err
     try:
         view = request.args.get('view', '').strip()
         if not view or not _valid_view_name(view):
@@ -1489,7 +1626,7 @@ def discover_columns(portal_id):
 def my_portals():
     """Return portals accessible to a user (admins get all)."""
     try:
-        email = request.args.get('email', '').strip().lower()
+        email = (g.get('user_email') or request.args.get('email', '')).strip().lower()
         if not email:
             return jsonify({"error": "email required"}), 400
 
@@ -1534,6 +1671,8 @@ def my_portals():
 @app.route('/portals/<portal_id>/access', methods=['GET'])
 def get_portal_access(portal_id):
     """List all users with access to a portal."""
+    err = _require_admin(allow_unverified=True)
+    if err: return err
     try:
         with _db_lock:
             rows = get_con().execute(
@@ -1613,7 +1752,7 @@ def data_load():
         to_date         = body.get('to_date', '')
         filters         = body.get('filters', {})
         text_filters    = body.get('text_filters', {})
-        restrict_values = body.get('restrict_values', [])
+        restrict_values = _server_restrictions(portal_id, body.get('restrict_values', []))
         limit           = min(int(body.get('limit', 50_000)), 100_000)
         count_only      = body.get('count_only', False)
         include_count   = body.get('include_count', False)
@@ -1655,6 +1794,8 @@ def data_load():
             resp['count'] = total_count
         return jsonify(resp)
 
+    except AccessDenied as e:
+        return jsonify({'error': str(e)}), 403
     except BadInput as e:
         return jsonify({'error': str(e)}), 400
     except ValueError as e:
@@ -1679,6 +1820,7 @@ def data_values():
         restrict_values_json = request.args.get('restrict_values', '')
         if restrict_values_json:
             restrict_values = _parse_restrict_json(restrict_values_json)
+        restrict_values = _server_restrictions(portal_id, restrict_values)
 
         portal      = _load_portal(portal_id)
         config      = portal['config']
@@ -1713,6 +1855,8 @@ def data_values():
 
         return jsonify({'values': [r[0] for r in rows], 'has_blank': blank_cnt > 0})
 
+    except AccessDenied as e:
+        return jsonify({'error': str(e)}), 403
     except BadInput as e:
         return jsonify({'error': str(e)}), 400
     except ValueError as e:
@@ -1733,6 +1877,7 @@ def _export_context(args):
             restrict_values = json.loads(restrict_values_json)
         except json.JSONDecodeError:
             raise ValueError('Invalid restrict_values JSON')
+    restrict_values = _server_restrictions(portal_id, restrict_values)
 
     portal = _load_portal(portal_id)
     config = portal['config']
@@ -1868,10 +2013,13 @@ def export_start():
         if not export_id:
             return jsonify({'error': 'export_id is required'}), 400
         ctx = _export_context(request.args)
-        _set_export_progress(export_id, status='queued', rows=0, files=0, portal_id=ctx['portal_id'])
+        _set_export_progress(export_id, status='queued', rows=0, files=0, portal_id=ctx['portal_id'],
+                             owner=g.get('user_email'))
         worker = _threading.Thread(target=_run_export_job, args=(export_id, ctx), daemon=True)
         worker.start()
         return jsonify({'status': 'queued', 'export_id': export_id})
+    except AccessDenied as e:
+        return jsonify({'error': str(e)}), 403
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
@@ -1887,6 +2035,8 @@ def export_file():
         return jsonify({'error': 'export_id is required'}), 400
     with _export_progress_lock:
         status = dict(_export_progress.get(export_id, {}))
+    if status.get('owner') and g.get('user_email') != status['owner']:
+        return jsonify({'error': 'This export belongs to another user'}), 403
     if status.get('status') != 'ready':
         return jsonify({'error': 'export is not ready', 'status': status.get('status', 'unknown')}), 409
     path = status.get('path')
@@ -1929,81 +2079,6 @@ def _zip_response(path, filename, export_id):
     })
 
 
-@app.route('/export', methods=['GET'])
-def export_data():
-    """
-    Full export — streams ZIP from Fabric view.
-    Params: portal_id, from_date, to_date, restrict_value (RBAC),
-            fd_COLUMN (dropdown), ft_COLUMN (text contains)
-    """
-    try:
-        portal_id       = request.args.get('portal_id', 'pos-sales')
-        export_id       = request.args.get('export_id', '').strip()
-        from_date       = request.args.get('from_date', '').strip()
-        to_date         = request.args.get('to_date', '').strip()
-        restrict_values = request.args.getlist('restrict_value')
-        restrict_values_json = request.args.get('restrict_values', '')
-        if restrict_values_json:
-            try:
-                restrict_values = json.loads(restrict_values_json)
-            except json.JSONDecodeError:
-                return jsonify({'error': 'Invalid restrict_values JSON'}), 400
-
-        portal       = _load_portal(portal_id)
-        config       = portal['config']
-        view_name    = portal['view_name']
-        date_col     = config.get('date_col')
-        if date_col and (not from_date or not to_date):
-            return jsonify({'error': 'from_date and to_date required'}), 400
-        restrict_cols = _portal_restrict_cols(config)
-        restrict_map = _normalize_restrictions(config, restrict_values)
-        allowed_cols = _portal_allowed_cols(config)
-
-        # Parse fd_ (dropdown IN) and ft_ (text LIKE) filter params
-        filters, text_filters = {}, {}
-        for col in allowed_cols:
-            values = request.args.getlist(f'fd_{col}')
-            if values:
-                filters[col] = values
-            val = request.args.get(f'ft_{col}', '').strip()
-            if val:
-                text_filters[col] = val
-
-        where     = _build_where(
-            from_date, to_date, filters, text_filters,
-            restrict_cols, restrict_map, date_col, allowed_cols
-        )
-        file_stem = f'{portal_id}_{from_date}_to_{to_date}'
-        headers   = _portal_export_headers(config)
-        sql       = _portal_select_sql(config, view_name, where)
-        ctx       = {
-            'portal_id': portal_id,
-            'file_stem': file_stem,
-            'headers': headers,
-            'sql': sql,
-        }
-        _set_export_progress(export_id, status='starting', rows=0, files=0, portal_id=portal_id)
-        tmp_path, total_rows, part = _write_export_zip(export_id, ctx)
-
-        _set_export_progress(export_id, status='sending', rows=total_rows if 'total_rows' in locals() else 0, files=part if 'part' in locals() else 0)
-
-        return _zip_response(tmp_path, f'{file_stem}.zip', export_id)
-
-    except BadInput as e:
-        return jsonify({'error': str(e)}), 400
-    except ValueError as e:
-        return jsonify({'error': str(e)}), 404
-    except Exception as e:
-        try:
-            if 'tmp_path' in locals() and tmp_path and os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except Exception:
-            pass
-        _set_export_progress(export_id if 'export_id' in locals() else '', status='failed', error=str(e))
-        print("Export failed:", traceback.format_exc(), flush=True)
-        return jsonify({'error': str(e)}), 500
-
-
 @app.route('/export/status', methods=['GET'])
 def export_status():
     export_id = request.args.get('export_id', '').strip()
@@ -2013,7 +2088,10 @@ def export_status():
         status = dict(_export_progress.get(export_id, {}))
     if not status:
         return jsonify({'status': 'unknown', 'rows': 0, 'files': 0})
+    if status.get('owner') and g.get('user_email') != status['owner']:
+        return jsonify({'error': 'This export belongs to another user'}), 403
     status.pop('path', None)
+    status.pop('owner', None)
     return jsonify(status)
 
 

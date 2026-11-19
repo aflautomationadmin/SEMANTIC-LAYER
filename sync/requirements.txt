@@ -5,3 +5,4 @@ python-dotenv>=1.0
 flask>=3.0
 flask-cors>=4.0
 gunicorn>=22.0; platform_system != "Windows"
+PyJWT[crypto]>=2.8

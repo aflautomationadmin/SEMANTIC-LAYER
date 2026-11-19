@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { MsalProvider } from '@azure/msal-react'
 import { msalInstance } from './authConfig'
+import { installApiAuth } from './apiAuth'
 import AuthWrapper from './AuthWrapper'
 import App from './App.jsx'
 import './index.css'
@@ -9,6 +10,7 @@ import './index.css'
 // MSAL v3: must initialize before any render, then handle the post-redirect response
 await msalInstance.initialize()
 await msalInstance.handleRedirectPromise().catch(() => {})
+installApiAuth()
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
