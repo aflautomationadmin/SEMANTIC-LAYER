@@ -575,15 +575,14 @@ def _build_where(from_date, to_date, filters, text_filters,
         col = col.upper()
         if col not in allowed_cols:
             continue
-        terms = [t.strip().lower() for t in str(val).split(',') if t.strip()]
+        # Exact match (case-insensitive) against any of the comma-separated values
+        terms = list(dict.fromkeys(t.strip().lower() for t in str(val).split(',') if t.strip()))
         if not terms:
             continue
-        if len(terms) > 500:
-            raise BadInput(f'Too many comma-separated values for {col} (max 500)')
-        like = ' OR '.join(
-            f"LOWER(CAST([{col}] AS NVARCHAR(MAX))) LIKE N'%{_safe(t)}%'" for t in terms
-        )
-        conds.append(f'({like})')
+        if len(terms) > 5000:
+            raise BadInput(f'Too many comma-separated values for {col} (max 5000)')
+        in_list = ', '.join(f"N'{_safe(t)}'" for t in terms)
+        conds.append(f"LOWER(LTRIM(RTRIM(CAST([{col}] AS NVARCHAR(4000))))) IN ({in_list})")
 
     return ' AND '.join(conds) if conds else '1=1'
 
