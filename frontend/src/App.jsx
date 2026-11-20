@@ -493,7 +493,7 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
                   ) : (
                     <input
                       className={`f-text ${filterValues[key] ? 'f-text-active' : ''}`}
-                      type="text" placeholder="contains…"
+                      type="text" placeholder="contains… (comma separated)"
                       value={filterValues[key] || ''}
                       onChange={e => setFilter(key, e.target.value)}
                     />

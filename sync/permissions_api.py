@@ -573,11 +573,17 @@ def _build_where(from_date, to_date, filters, text_filters,
     # Text / contains filters (ft_ prefix from frontend)
     for col, val in (text_filters or {}).items():
         col = col.upper()
-        if col not in allowed_cols or not str(val).strip():
+        if col not in allowed_cols:
             continue
-        conds.append(
-            f"LOWER(CAST([{col}] AS NVARCHAR(MAX))) LIKE N'%{_safe(str(val).lower())}%'"
+        terms = [t.strip().lower() for t in str(val).split(',') if t.strip()]
+        if not terms:
+            continue
+        if len(terms) > 500:
+            raise BadInput(f'Too many comma-separated values for {col} (max 500)')
+        like = ' OR '.join(
+            f"LOWER(CAST([{col}] AS NVARCHAR(MAX))) LIKE N'%{_safe(t)}%'" for t in terms
         )
+        conds.append(f'({like})')
 
     return ' AND '.join(conds) if conds else '1=1'
 
