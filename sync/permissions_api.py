@@ -68,6 +68,30 @@ def _cleanup_stale_export_zips():
 
 _cleanup_stale_export_zips()
 
+_export_waiting = []  # export ids queued for a slot, in order
+EXPORT_ZIP_MAX_AGE_SEC = _env_int('EXPORT_ZIP_MAX_AGE_MIN', 120, 10) * 60
+
+
+def _export_zip_janitor():
+    """Periodically delete export zips nobody downloaded (abandoned tabs, cancelled jobs)."""
+    import glob
+    import time
+    while True:
+        time.sleep(600)
+        try:
+            cutoff = time.time() - EXPORT_ZIP_MAX_AGE_SEC
+            for f in glob.glob(os.path.join(EXPORT_TMP_DIR, '*.zip')):
+                try:
+                    if os.path.getmtime(f) < cutoff:
+                        os.remove(f)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+_threading.Thread(target=_export_zip_janitor, daemon=True).start()
+
 
 def _set_export_progress(export_id, **patch):
     if not export_id:
@@ -1971,7 +1995,14 @@ def _write_export_zip(export_id, ctx):
     tmp_path = None
     # Exports can run for minutes, so they use their own connection instead of a
     # pooled one, and are capped so they cannot starve interactive requests.
-    with _export_slots:
+    with _export_progress_lock:
+        _export_waiting.append(export_id)
+    _set_export_progress(export_id, status='waiting', rows=0, files=0)
+    _export_slots.acquire()
+    with _export_progress_lock:
+        if export_id in _export_waiting:
+            _export_waiting.remove(export_id)
+    try:
         conn = _fab_conn()
         try:
             cursor = conn.cursor()
@@ -1990,6 +2021,8 @@ def _write_export_zip(export_id, ctx):
                 conn.close()
             except Exception:
                 pass
+    finally:
+        _export_slots.release()
 
     return tmp_path, total_rows, part
 
@@ -2097,6 +2130,12 @@ def export_status():
         return jsonify({'error': 'This export belongs to another user'}), 403
     status.pop('path', None)
     status.pop('owner', None)
+    if status.get('status') == 'waiting':
+        with _export_progress_lock:
+            try:
+                status['queue_pos'] = _export_waiting.index(export_id) + 1
+            except ValueError:
+                status['queue_pos'] = 0
     return jsonify(status)
 
 

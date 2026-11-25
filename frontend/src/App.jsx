@@ -311,7 +311,11 @@ export default function App({ user, allowedBrands, portal, showAdmin, onBack }) 
           ...prev,
           rows: statusRows,
           files: Number(status.files || 0),
-          serverStatus: status.status,
+          serverStatus: status.status === 'waiting'
+            ? (status.queue_pos > 1
+                ? `waiting in queue - ${status.queue_pos - 1} export(s) ahead, other exports are running`
+                : 'waiting for a free slot - other exports are running')
+            : status.status,
         } : prev)
         if (status.status === 'failed') throw new Error(status.error || 'Export failed')
         if (status.status === 'ready') break
