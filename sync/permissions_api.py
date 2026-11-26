@@ -338,13 +338,29 @@ def _load_portal(portal_id: str) -> dict:
     }
 
 
+class _ColSet(set):
+    """Whitelist of upper-cased column names that also remembers each column's real
+    spelling. Fabric treats identifiers case-sensitively, so SQL must use the real name
+    (e.g. [Bill Date]), not the upper-cased lookup key."""
+    names: dict = {}
+
+
 def _portal_allowed_cols(config: dict) -> set:
     """Build the SQL-injection whitelist from portal column config."""
-    cols = {c['key'].upper() for c in config.get('columns', [])}
-    for f in config.get('filters', []):
-        cols.add(f['key'].upper())
-    for c in _portal_restrict_cols(config):
-        cols.add(c)
+    names = {}
+    raw = [c['key'] for c in config.get('columns', [])]
+    raw += [f['key'] for f in config.get('filters', [])]
+    raw += list(config.get('restrict_cols') or [])
+    if config.get('restrict_col'):
+        raw.append(config['restrict_col'])
+    if config.get('date_col'):
+        raw.append(config['date_col'])
+    for k in raw:
+        k = str(k).strip()
+        if k:
+            names.setdefault(k.upper(), k)
+    cols = _ColSet(names)
+    cols.names = names
     return cols
 
 
@@ -555,7 +571,12 @@ def _portal_export_headers(config: dict) -> list:
 def _build_where(from_date, to_date, filters, text_filters,
                  restrict_cols, restrict_values, date_col, allowed_cols):
     """Build SQL WHERE clause dynamically for any portal."""
-    date_col = (date_col or '').upper()
+    names = getattr(allowed_cols, 'names', {})
+
+    def real(c):
+        return names.get(str(c).upper(), c)
+
+    date_col = real(date_col or '')
     conds = []
     if date_col and from_date and to_date:
         _check_date(from_date, 'from_date')
@@ -574,7 +595,7 @@ def _build_where(from_date, to_date, filters, text_filters,
         if col not in restrict_cols or col not in allowed_cols or not values:
             continue
         q = ', '.join(f"N'{_safe(v)}'" for v in values)
-        conds.append(f'[{col}] IN ({q})')
+        conds.append(f'[{real(col)}] IN ({q})')
 
     # Dropdown / multi-select filters (fd_ prefix from frontend)
     for col, values in (filters or {}).items():
@@ -588,9 +609,9 @@ def _build_where(from_date, to_date, filters, text_filters,
         parts = []
         if non_blank:
             q = ', '.join(f"N'{_safe(v)}'" for v in non_blank)
-            parts.append(f'[{col}] IN ({q})')
+            parts.append(f'[{real(col)}] IN ({q})')
         if want_blank:
-            parts.append(f"([{col}] IS NULL OR CAST([{col}] AS NVARCHAR(MAX)) = N'')")
+            parts.append(f"([{real(col)}] IS NULL OR CAST([{real(col)}] AS NVARCHAR(MAX)) = N'')")
         if parts:
             conds.append('(' + ' OR '.join(parts) + ')')
 
@@ -606,7 +627,7 @@ def _build_where(from_date, to_date, filters, text_filters,
         if len(terms) > 5000:
             raise BadInput(f'Too many comma-separated values for {col} (max 5000)')
         in_list = ', '.join(f"N'{_safe(t)}'" for t in terms)
-        conds.append(f"LOWER(LTRIM(RTRIM(CAST([{col}] AS NVARCHAR(4000))))) IN ({in_list})")
+        conds.append(f"LOWER(LTRIM(RTRIM(CAST([{real(col)}] AS NVARCHAR(4000))))) IN ({in_list})")
 
     return ' AND '.join(conds) if conds else '1=1'
 
@@ -1438,9 +1459,11 @@ def portal_column_values():
     if err: return err
     try:
         view   = request.args.get('view',   '').strip()
-        column = request.args.get('column', '').strip().upper()
+        column = request.args.get('column', '').strip()
         if not view or not column:
             return jsonify({"values": []})
+        if ']' in column:
+            return jsonify({"error": "invalid column"}), 400
         if not _valid_view_name(view):
             return jsonify({"error": "view must be schema.ViewName format"}), 400
         with _FabConn() as conn:
@@ -1599,14 +1622,16 @@ def portal_restrict_values(portal_id):
             return jsonify({"values": [], "values_by_column": {}, "columns": []})
 
         view_name = portal['view_name']
+        real_names = _portal_allowed_cols(config).names
         values_by_column = {}
         with _FabConn() as conn:
             for restrict_col in restrict_cols:
+                rc = real_names.get(restrict_col, restrict_col)
                 rows = conn.execute(f"""
-                    SELECT DISTINCT CAST([{restrict_col}] AS NVARCHAR(500)) AS val
+                    SELECT DISTINCT CAST([{rc}] AS NVARCHAR(500)) AS val
                     FROM {view_name}
-                    WHERE [{restrict_col}] IS NOT NULL
-                      AND CAST([{restrict_col}] AS NVARCHAR(500)) != N''
+                    WHERE [{rc}] IS NOT NULL
+                      AND CAST([{rc}] AS NVARCHAR(500)) != N''
                     ORDER BY val
                 """).fetchall()
                 values_by_column[restrict_col] = [r[0] for r in rows]
@@ -1813,9 +1838,9 @@ def data_load():
                 row = conn.execute(_portal_count_sql(config, view_name, where)).fetchone()
                 total_count = row[0]
 
-        date_col_upper = (date_col or '').upper()
-        if date_col_upper and date_col_upper in df.columns:
-            df[date_col_upper] = df[date_col_upper].astype(str)
+        real_date = allowed_cols.names.get((date_col or '').upper(), date_col or '')
+        if real_date and real_date in df.columns:
+            df[real_date] = df[real_date].astype(str)
         df = df.fillna('')
 
         resp = {'data': df.to_dict('records')}
@@ -1861,6 +1886,7 @@ def data_values():
 
         if column not in allowed_cols:
             return jsonify({'error': f'Column not allowed: {column}'}), 400
+        column = allowed_cols.names.get(column, column)
 
         where = _build_where(
             from_date, to_date, {}, {},
@@ -1920,11 +1946,11 @@ def _export_context(args):
     allowed_cols = _portal_allowed_cols(config)
 
     filters, text_filters = {}, {}
-    for col in allowed_cols:
-        values = args.getlist(f'fd_{col}')
+    for col, orig in allowed_cols.names.items():
+        values = args.getlist(f'fd_{orig}') or args.getlist(f'fd_{col}')
         if values:
             filters[col] = values
-        val = args.get(f'ft_{col}', '').strip()
+        val = (args.get(f'ft_{orig}') or args.get(f'ft_{col}') or '').strip()
         if val:
             text_filters[col] = val
 
